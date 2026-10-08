@@ -301,6 +301,9 @@ func TestServeNotRunningWhenLockMissing(t *testing.T) {
 	if !strings.Contains(text, "serve 未运行,请先手工运行 mockit serve") {
 		t.Fatalf("lock 缺失文案不符:\n%s", text)
 	}
+	if strings.Contains(text, "http") || strings.Contains(text, "://") {
+		t.Fatalf("lock 缺失文案不得含 URL(F1 红线):\n%s", text)
+	}
 }
 
 func TestServeNotRunningWhenPingFails(t *testing.T) {
@@ -325,6 +328,49 @@ func TestServeNotRunningWhenPingFails(t *testing.T) {
 	}
 	if !strings.Contains(text, "ping") {
 		t.Fatalf("ping 不通文案应注明 ping 环节:\n%s", text)
+	}
+	if strings.Contains(text, "http") || strings.Contains(text, "://") {
+		t.Fatalf("ping 不通文案泄漏 Go http 客户端错误原文(F1 红线,不得含 URL):\n%s", text)
+	}
+}
+
+// 请求失败路径:baseOverride 指向无人监听的死端口 → 定位成功但请求被拒,
+// 三工具的错误文案不得携带 Go http 客户端错误原文(形如
+// Get "http://127.0.0.1:port/api/submissions": dial tcp ...,F1 红线)。
+func TestRequestFailureTextHasNoURL(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadPort := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	s, _, _ := newTestSrv(t, fmt.Sprintf("http://127.0.0.1:%d", deadPort))
+
+	cases := []struct {
+		name     string
+		tool     string
+		args     json.RawMessage
+		wantHead string
+	}{
+		{"submit", "mockit_submit", mustJSON(t, map[string]any{
+			"title":    "t",
+			"variants": []map[string]any{{"label": "A", "html": "<b/>"}},
+		}), "提交失败"},
+		{"get_review", "mockit_get_review", mustJSON(t, map[string]any{"id": "ab12cd"}), "查询失败"},
+		{"list", "mockit_list", json.RawMessage("{}"), "查询失败"},
+	}
+	for _, c := range cases {
+		text, isErr := s.callTool(c.tool, c.args)
+		if !isErr {
+			t.Fatalf("%s: serve 拒连应报错, 得成功文本: %s", c.name, text)
+		}
+		if !strings.Contains(text, c.wantHead) {
+			t.Fatalf("%s: 错误文案缺 %q:\n%s", c.name, c.wantHead, text)
+		}
+		if strings.Contains(text, "http") || strings.Contains(text, "://") {
+			t.Fatalf("%s: 错误文案泄漏 URL(F1 红线):\n%s", c.name, text)
+		}
 	}
 }
 

@@ -27,6 +27,19 @@ const maxFileBytes = 20 << 20
 // serveNotRunHint 是 serve 定位失败(lock 缺失或 ping 不通)的统一提示文案。
 const serveNotRunHint = "serve 未运行,请先手工运行 mockit serve"
 
+// errText 把错误压成可给 agent 看的一行文本(F1:工具输出零 URL)。
+// Go http 客户端请求失败的错误原文自带完整 URL(形如
+// Get "http://127.0.0.1:port/path": dial tcp ...),弱 agent 会把它当审核
+// 链接贴给用户;这里剥掉 *url.Error 外壳只留底层原因(dial tcp ...),
+// 非 url.Error 原样返回。
+func errText(err error) string {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err.Error()
+	}
+	return err.Error()
+}
+
 // ---- tools/list ----
 
 type toolContent struct {
@@ -136,7 +149,7 @@ func (s *server) resolveBase() (string, error) {
 	}
 	if s.ping != nil {
 		if err := s.ping(lock.Port); err != nil {
-			return "", fmt.Errorf("%s(ping 127.0.0.1:%d 不通: %v)", serveNotRunHint, lock.Port, err)
+			return "", fmt.Errorf("%s(ping 127.0.0.1:%d 不通: %v)", serveNotRunHint, lock.Port, errText(err))
 		}
 	}
 	return fmt.Sprintf("http://127.0.0.1:%d", lock.Port), nil
@@ -280,7 +293,7 @@ func (s *server) toolSubmit(raw json.RawMessage) (string, bool) {
 	}
 	status, respBody, err := s.apiPost(base, "/api/submissions", body)
 	if err != nil {
-		return fmt.Sprintf("提交失败(请求 serve): %v", err), true
+		return fmt.Sprintf("提交失败(请求 serve): %v", errText(err)), true
 	}
 	if status < 200 || status >= 300 {
 		return apiErrText("提交", status, respBody), true
@@ -371,7 +384,7 @@ func (s *server) toolGetReview(raw json.RawMessage) (string, bool) {
 	}
 	status, body, err := s.apiGet(base, "/api/submissions/"+url.PathEscape(a.ID))
 	if err != nil {
-		return fmt.Sprintf("查询失败(请求 serve): %v", err), true
+		return fmt.Sprintf("查询失败(请求 serve): %v", errText(err)), true
 	}
 	if status < 200 || status >= 300 {
 		return apiErrText("查询", status, body), true
@@ -428,7 +441,7 @@ func (s *server) toolList(raw json.RawMessage) (string, bool) {
 	}
 	status, body, err := s.apiGet(base, path)
 	if err != nil {
-		return fmt.Sprintf("查询失败(请求 serve): %v", err), true
+		return fmt.Sprintf("查询失败(请求 serve): %v", errText(err)), true
 	}
 	if status < 200 || status >= 300 {
 		return apiErrText("查询", status, body), true
