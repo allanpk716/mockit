@@ -2,13 +2,201 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>mockit · 候选全屏</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>mockit · 候选</title>
+<style>
+:root{
+  --bg:#0e1116; --surface:#171b22; --surface2:#1f242e; --border:#2a303c;
+  --text:#e8eaee; --dim:#9aa3b2; --accent:#4f8cff; --chip:#2a3342;
+  --ok:#3fbf72; --bad:#e2564e;
+  --bar-h:104px; /* JS 按 #bar 实测高度覆写 */
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{
+  background:var(--bg); color:var(--text); overflow:hidden;
+  font:16px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",Roboto,sans-serif;
+  -webkit-tap-highlight-color:transparent;
+}
+a{color:inherit;text-decoration:none}
+button{font:inherit;cursor:pointer;touch-action:manipulation}
+/* 全屏舞台:高度 = 视口 - 悬浮条实测高度,iframe 不被悬浮条遮挡 */
+#stage{position:fixed;top:0;left:0;right:0;bottom:var(--bar-h)}
+#frame{width:100%;height:100%;border:0;display:block;background:#fff}
+#stage-msg{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  color:var(--dim);background:var(--bg);padding:24px;text-align:center;font-size:15px;
+}
+/* 底部悬浮条 */
+#bar{
+  position:fixed;left:0;right:0;bottom:0;z-index:10;
+  background:var(--surface);border-top:1px solid var(--border);
+  padding:8px 10px calc(8px + env(safe-area-inset-bottom));
+}
+#pills{display:flex;gap:8px;overflow-x:auto;padding:2px;margin-bottom:8px}
+.pill{
+  flex:none;min-width:34px;height:32px;padding:0 8px;
+  display:flex;align-items:center;justify-content:center;
+  border-radius:999px;background:var(--surface2);border:1px solid var(--border);
+  color:var(--dim);font-size:14px;user-select:none;
+}
+.pill.cur{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.bar-row{display:flex;gap:8px;align-items:center}
+#comment{
+  flex:1;min-width:0;font-size:16px; /* 防 iOS 聚焦缩放 */
+  background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+  color:var(--text);padding:9px 10px;
+}
+#comment::placeholder{color:var(--dim)}
+.btn{
+  flex:none;border:0;border-radius:8px;padding:9px 16px;font-weight:600;user-select:none;
+}
+.btn:active{opacity:.85}
+#btn-primary{background:var(--accent);color:#fff}
+#btn-reject{background:rgba(226,86,78,.16);color:var(--bad);border:1px solid rgba(226,86,78,.4)}
+.btn[disabled]{opacity:.45;cursor:default}
+#err{color:var(--bad);font-size:13px;margin-top:6px;word-break:break-all}
+#note-chip{color:var(--dim);font-size:12px;margin-top:6px;word-break:break-all}
+</style>
 </head>
-<body>
-<main>
-<h1>mockit 候选全屏壳页</h1>
-<p>占位页——正式壳页(iframe 指向 /raw/{id}/{n}/index.html、底部悬浮条切换与投票)在票 04 落地时整体替换本文件。</p>
-</main>
+<body data-page="variant">
+<div id="stage">
+  <iframe id="frame" title="候选页面"></iframe>
+  <div id="stage-msg" hidden></div>
+</div>
+
+<div id="bar">
+  <div id="pills"></div>
+  <div class="bar-row">
+    <input id="comment" type="text" placeholder="批注(可选)" maxlength="500" autocomplete="off">
+    <button type="button" id="btn-primary" class="btn">通过</button>
+    <button type="button" id="btn-reject" class="btn">打回</button>
+  </div>
+  <div id="err" hidden></div>
+  <div id="note-chip" hidden></div>
+</div>
+
+<script>
+(function(){
+'use strict';
+var $ = function(id){ return document.getElementById(id); };
+var m = location.pathname.match(/^\/s\/([0-9a-z]{6})\/v(\d+)$/);
+var id = m ? m[1] : '';
+var n = m ? parseInt(m[2], 10) : 0;
+var sub = null;
+var multi = false;
+var busy = false;
+
+function fail(msg){
+  $('frame').style.display = 'none';
+  var el = $('stage-msg');
+  el.textContent = msg;
+  el.hidden = false;
+  $('bar').hidden = true;
+  fitBar();
+}
+function showErr(msg){
+  var e = $('err');
+  e.textContent = msg;
+  e.hidden = false;
+}
+function decisionText(s){
+  if(s.decision === 'approve') return '通过';
+  if(s.decision === 'reject') return '打回';
+  if(s.decision === 'choose'){
+    var label = '', vs = s.variants || [];
+    for(var i = 0; i < vs.length; i++){
+      if(vs[i].seq === s.chosen_variant){ label = vs[i].label; break; }
+    }
+    return '选中 候选 ' + s.chosen_variant + '·' + label;
+  }
+  return '已审';
+}
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+/* 悬浮条高度变化时同步舞台底边,保证 iframe 底部留白、内容不被遮挡 */
+function fitBar(){
+  var bar = $('bar');
+  if(bar.hidden) return;
+  document.documentElement.style.setProperty('--bar-h', bar.offsetHeight + 'px');
+}
+
+function init(){
+  var vs = sub.variants || [];
+  var cur = null, ph = '';
+  for(var i = 0; i < vs.length; i++){
+    var v = vs[i];
+    if(v.seq === n) cur = v;
+    ph += '<a class="pill' + (v.seq === n ? ' cur' : '') + '" href="/s/' + id + '/v' + v.seq + '" title="' + esc(v.label) + '">' + v.seq + '</a>';
+  }
+  $('pills').innerHTML = ph;
+  if(!cur){ fail('候选 ' + n + ' 不存在'); return; }
+
+  $('frame').src = '/raw/' + id + '/' + n + '/index.html';
+
+  /* 分支:多候选=选它(choose+候选序号) / 单候选=通过(approve) */
+  multi = vs.length > 1;
+  $('bar').dataset.mode = multi ? 'multi' : 'single';
+  $('btn-primary').textContent = multi ? '选它' : '通过';
+
+  if(sub.status === 'reviewed'){
+    /* 终态:按钮与批注停用,展示裁决;错误兜底仍保留(服务端 409) */
+    $('btn-primary').disabled = true;
+    $('btn-reject').disabled = true;
+    $('comment').disabled = true;
+    var chip = $('note-chip');
+    chip.textContent = '已审 · ' + decisionText(sub) + (sub.comment ? ' · 批注:' + sub.comment : '');
+    chip.hidden = false;
+  }
+  fitBar();
+}
+
+function vote(decision){
+  if(busy || !sub || sub.status === 'reviewed') return;
+  busy = true;
+  $('err').hidden = true;
+  var body = { id: id, decision: decision, comment: $('comment').value };
+  if(decision === 'choose') body.variant = n; /* choose 必须携带候选序号 */
+  fetch('/api/review', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  }).then(function(r){
+    return r.json().then(function(j){ return { ok: r.ok, j: j }; });
+  }).then(function(res){
+    if(res.ok){ location.href = '/s/' + id; return; } /* 成功 → 回详情页 */
+    busy = false;
+    showErr('提交失败: ' + ((res.j && res.j.error) ? res.j.error : '未知错误')); /* 如已审(409)就地显示 */
+  }).catch(function(err){
+    busy = false;
+    showErr('提交失败: ' + err.message);
+  });
+}
+$('btn-primary').addEventListener('click', function(){ vote(multi ? 'choose' : 'approve'); });
+$('btn-reject').addEventListener('click', function(){ vote('reject'); });
+
+window.addEventListener('resize', fitBar);
+window.addEventListener('load', fitBar);
+
+if(!m){
+  fail('链接不合法');
+} else {
+  fetch('/api/submissions/' + id)
+    .then(function(r){
+      if(r.status === 404) throw new Error('提交不存在(可能已过保留期)');
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(s){ sub = s; init(); })
+    .catch(function(err){ fail('加载失败: ' + err.message); });
+}
+fitBar();
+})();
+</script>
 </body>
 </html>
