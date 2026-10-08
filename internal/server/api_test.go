@@ -244,7 +244,8 @@ func TestSubmitHTMLFullChain(t *testing.T) {
 		t.Fatalf("候选 1 形状错: %+v", v0)
 	}
 
-	// 落盘:index.html 与 note.txt
+	// 落盘:index.html 落盘;note 入库不再落盘(note.txt 边车废弃,
+	// 留档语义:note 随记录留档 90 天,不被 14 天文件清理连带删除)
 	got, err := os.ReadFile(filepath.Join(dataDir, d.ID, "v1", "index.html"))
 	if err != nil {
 		t.Fatalf("v1 未落盘: %v", err)
@@ -255,12 +256,8 @@ func TestSubmitHTMLFullChain(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dataDir, d.ID, "v2", "index.html")); err != nil {
 		t.Fatalf("v2 未落盘: %v", err)
 	}
-	noteB, err := os.ReadFile(filepath.Join(dataDir, d.ID, "note.txt"))
-	if err != nil {
-		t.Fatalf("note.txt 未落盘: %v", err)
-	}
-	if string(noteB) != "两个方案对比" {
-		t.Fatalf("note.txt 内容错: %q", noteB)
+	if _, err := os.Stat(filepath.Join(dataDir, d.ID, "note.txt")); !os.IsNotExist(err) {
+		t.Fatalf("note 应入库,note.txt 不应再落盘(stat err=%v)", err)
 	}
 
 	// detail 可读
@@ -281,6 +278,49 @@ func TestSubmitHTMLFullChain(t *testing.T) {
 	}
 	if string(drain(t, rawResp)) != html {
 		t.Fatalf("raw 内容错")
+	}
+}
+
+// TestNoteServedFromDB note 以库值为准:即使提交目录里残留一份内容
+// 过期的 note.txt 边车,API 也只回库值(新数据全走库,文件值不可信)。
+func TestNoteServedFromDB(t *testing.T) {
+	ts, _, dataDir := newTestServer(t)
+	in := submitIn{Title: "带备注", Note: "库里的新备注", Variants: []variantIn{htmlVariant("A", "a")}}
+	resp := postJSON(t, ts, "/api/submissions", in)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("提交应 201,得 %d: %s", resp.StatusCode, drain(t, resp))
+	}
+	var d detailOut
+	decodeJSON(t, resp, &d)
+
+	if err := os.WriteFile(filepath.Join(dataDir, d.ID, "note.txt"), []byte("过期的文件值"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var d2 detailOut
+	decodeJSON(t, get(t, ts, "/api/submissions/"+d.ID), &d2)
+	if d2.Note != "库里的新备注" {
+		t.Fatalf("note 应读库值 %q,得 %q", "库里的新备注", d2.Note)
+	}
+}
+
+// TestLegacyNoteTxtCompat 存量兼容:note 入库改造前的老数据只有
+// <data>/{id}/note.txt(库值为空),库空且文件存在时仍读文件,存量不丢。
+func TestLegacyNoteTxtCompat(t *testing.T) {
+	ts, _, dataDir := newTestServer(t)
+	in := submitIn{Title: "存量形态", Variants: []variantIn{htmlVariant("A", "a")}}
+	resp := postJSON(t, ts, "/api/submissions", in)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("提交应 201,得 %d", resp.StatusCode)
+	}
+	var d detailOut
+	decodeJSON(t, resp, &d)
+	if err := os.WriteFile(filepath.Join(dataDir, d.ID, "note.txt"), []byte("存量备注"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var d2 detailOut
+	decodeJSON(t, get(t, ts, "/api/submissions/"+d.ID), &d2)
+	if d2.Note != "存量备注" {
+		t.Fatalf("库值空时应兼容读 note.txt,得 %q", d2.Note)
 	}
 }
 

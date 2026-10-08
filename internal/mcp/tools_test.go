@@ -36,7 +36,8 @@ func TestSubmitInlineHTMLPostsB64(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"ab12cd","status":"pending","variant_count":1}`)
+		// 真实形状:server 的 subToJSON 返回完整详情对象,候选在 variants 数组(无 variant_count 字段)
+		_, _ = io.WriteString(w, `{"id":"ab12cd","title":"登录页","note":"备注文案","status":"pending","decision":"","chosen_variant":0,"comment":"","created_at":1760000000,"reviewed_at":0,"pinned":false,"files_deleted":false,"variants":[{"seq":1,"label":"方案A","kind":"html","entry":"index.html","cleaned":false}]}`)
 	}))
 	defer backend.Close()
 
@@ -85,7 +86,8 @@ func TestSubmitPathVariantsKindMapping(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &gotBody)
-		_, _ = io.WriteString(w, `{"id":"zz99zz","status":"pending","variant_count":3}`)
+		// 真实形状:3 候选在 variants 数组(无 variant_count 字段)
+		_, _ = io.WriteString(w, `{"id":"zz99zz","title":"多候选","note":"","status":"pending","decision":"","chosen_variant":0,"comment":"","created_at":1760000000,"reviewed_at":0,"pinned":false,"files_deleted":false,"variants":[{"seq":1,"label":"A","kind":"html","entry":"index.html","cleaned":false},{"seq":2,"label":"B","kind":"html","entry":"index.html","cleaned":false},{"seq":3,"label":"C","kind":"zip","entry":"index.html","cleaned":false}]}`)
 	}))
 	defer backend.Close()
 
@@ -198,7 +200,8 @@ func TestGetReviewAndListAgainstFakeServe(t *testing.T) {
 			_, _ = io.WriteString(w, `{"id":"ab12cd","title":"登录页","status":"pending","decision":"","chosen_variant":null,"comment":"","variants":[{"seq":1,"label":"A","kind":"html"}]}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/submissions":
 			gotQuery = r.URL.RawQuery
-			_, _ = io.WriteString(w, `{"items":[{"id":"a1","title":"甲","status":"pending"},{"id":"b2","title":"乙","status":"reviewed"}]}`)
+			// 真实形状:server 列表契约是裸数组(api_test.go TestList 坐实),非 {items:[...]}
+			_, _ = io.WriteString(w, `[{"id":"a1","title":"甲","note":"","status":"pending","decision":"","chosen_variant":0,"comment":"","created_at":1760000000,"reviewed_at":0,"pinned":false,"files_deleted":false,"variants":[{"seq":1,"label":"A","kind":"html","entry":"index.html","cleaned":false}]},{"id":"b2","title":"乙","note":"","status":"reviewed","decision":"approve","chosen_variant":0,"comment":"","created_at":1759990000,"reviewed_at":1760000000,"pinned":false,"files_deleted":false,"variants":[]}]`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -241,7 +244,7 @@ func TestListEmptyAndNoFilters(t *testing.T) {
 	var gotQuery string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"items":[]}`)
+		_, _ = io.WriteString(w, `[]`)
 	}))
 	defer backend.Close()
 
@@ -381,7 +384,7 @@ func TestResolveViaLockAndPingHappyPath(t *testing.T) {
 		_, _ = io.WriteString(w, `{"version":"0.1.0"}`)
 	})
 	mux.HandleFunc("/api/submissions", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, `{"items":[]}`)
+		_, _ = io.WriteString(w, `[]`)
 	})
 	backend := httptest.NewServer(mux)
 	defer backend.Close()

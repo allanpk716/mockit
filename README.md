@@ -50,7 +50,7 @@ agent 调 `mockit_submit` 后收到的是"已提交 id=X 状态=pending(待审) 
 └── <提交id>/          # 6 位小写 base36 id
     ├── v1/index.html  # 候选 1(单 HTML 直存;zip 解包到同目录,入口固定 index.html)
     ├── v2/...
-    └── note.txt       # 提交说明 note(非空时落盘)
+    └── note.txt       # (仅存量数据)旧版说明文件;现说明 note 入库,随决策记录留档 90 天
 ```
 
 ## MCP 接入(CC / Claude Code)

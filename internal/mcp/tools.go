@@ -254,10 +254,12 @@ type submitPayload struct {
 	Variants []payloadVariant `json:"variants"`
 }
 
+// submitResponse 承接 server 的提交响应(subToJSON 形状):候选在
+// variants 数组里,无 variant_count 字段——候选数取 len(Variants)。
 type submitResponse struct {
-	ID           string `json:"id"`
-	Status       string `json:"status"`
-	VariantCount int    `json:"variant_count"`
+	ID       string         `json:"id"`
+	Status   string         `json:"status"`
+	Variants []variantBrief `json:"variants"`
 }
 
 func (s *server) toolSubmit(raw json.RawMessage) (string, bool) {
@@ -304,7 +306,7 @@ func (s *server) toolSubmit(raw json.RawMessage) (string, bool) {
 	}
 	// F1:本夜结果不含任何 URL;"暂无链接"为票面规定文案。
 	return fmt.Sprintf("已提交:id=%s 状态=%s 候选数=%d\nURL 功能待评审约束 F1 定案后启用(票 09),暂无链接。",
-		r.ID, statusText(r.Status), r.VariantCount), false
+		r.ID, statusText(r.Status), len(r.Variants)), false
 }
 
 // variantContent 把候选参数变成 (内容字节, kind):html 内联直用;path 按扩展名读本地文件。
@@ -364,10 +366,6 @@ type submissionJSON struct {
 type listArgs struct {
 	Status string `json:"status"`
 	Limit  int    `json:"limit"`
-}
-
-type listResponse struct {
-	Items []submissionJSON `json:"items"`
 }
 
 func (s *server) toolGetReview(raw json.RawMessage) (string, bool) {
@@ -446,16 +444,18 @@ func (s *server) toolList(raw json.RawMessage) (string, bool) {
 	if status < 200 || status >= 300 {
 		return apiErrText("查询", status, body), true
 	}
-	var r listResponse
-	if err := json.Unmarshal(body, &r); err != nil {
+	// server 列表契约是裸数组(internal/server/api_test.go TestList 定案,
+	// web 页同按裸数组消费),直接解码数组,勿包 {items} 外壳。
+	var items []submissionJSON
+	if err := json.Unmarshal(body, &items); err != nil {
 		return "列表响应解析失败: " + err.Error(), true
 	}
-	if len(r.Items) == 0 {
+	if len(items) == 0 {
 		return "暂无提交", false
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "共 %d 条:\n", len(r.Items))
-	for _, it := range r.Items {
+	fmt.Fprintf(&b, "共 %d 条:\n", len(items))
+	for _, it := range items {
 		fmt.Fprintf(&b, "- %s [%s] %s\n", it.ID, statusText(it.Status), it.Title)
 	}
 	return b.String(), false

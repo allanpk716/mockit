@@ -200,7 +200,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, aerr.code, aerr.msg)
 		return
 	}
-	writeJSON(w, http.StatusCreated, subToJSON(sub, s.noteOf(sub.ID)))
+	writeJSON(w, http.StatusCreated, subToJSON(sub, s.noteOf(sub)))
 }
 
 func (s *Server) handleListAPI(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +221,7 @@ func (s *Server) handleListAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]submissionJSON, 0, len(subs))
 	for _, sub := range subs {
-		out = append(out, subToJSON(sub, s.noteOf(sub.ID)))
+		out = append(out, subToJSON(sub, s.noteOf(sub)))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -237,7 +237,7 @@ func (s *Server) handleDetailAPI(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, storeStatus(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, subToJSON(sub, s.noteOf(id)))
+	writeJSON(w, http.StatusOK, subToJSON(sub, s.noteOf(sub)))
 }
 
 type reviewReq struct {
@@ -270,7 +270,7 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, storeStatus(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, subToJSON(sub, s.noteOf(sub.ID)))
+	writeJSON(w, http.StatusOK, subToJSON(sub, s.noteOf(sub)))
 }
 
 type pinReq struct {
@@ -293,7 +293,7 @@ func (s *Server) handlePin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, storeStatus(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, subToJSON(sub, s.noteOf(sub.ID)))
+	writeJSON(w, http.StatusOK, subToJSON(sub, s.noteOf(sub)))
 }
 
 // ---- 线上契约端点(lifecycle 票 01 定义;mcp 据此探测/关停) ----

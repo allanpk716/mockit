@@ -27,7 +27,7 @@ func TestStartCleanupScansAndStops(t *testing.T) {
 	}
 	defer st.Close()
 
-	if err := st.CreateSubmission("oldwire", "待清接线"); err != nil {
+	if err := st.CreateSubmission("oldwire", "待清接线", ""); err != nil {
 		t.Fatalf("CreateSubmission: %v", err)
 	}
 	subDir := filepath.Join(dataDir, "oldwire", "v1")

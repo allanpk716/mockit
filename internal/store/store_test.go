@@ -20,8 +20,33 @@ func testStore(t *testing.T) *Store {
 
 func mustCreate(t *testing.T, s *Store, id string) {
 	t.Helper()
-	if err := s.CreateSubmission(id, "标题 "+id); err != nil {
+	if err := s.CreateSubmission(id, "标题 "+id, ""); err != nil {
 		t.Fatalf("CreateSubmission(%s): %v", id, err)
+	}
+}
+
+func TestCreateAndGetNote(t *testing.T) {
+	s := testStore(t)
+	if err := s.CreateSubmission("abc123", "标题", "备注说明"); err != nil {
+		t.Fatalf("CreateSubmission: %v", err)
+	}
+	got, err := s.Get("abc123")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Note != "备注说明" {
+		t.Errorf("note 应入库,得 %q", got.Note)
+	}
+	// 空 note 也是合法入库形态,回空串
+	if err := s.CreateSubmission("def456", "标题2", ""); err != nil {
+		t.Fatalf("CreateSubmission(空 note): %v", err)
+	}
+	got2, err := s.Get("def456")
+	if err != nil {
+		t.Fatalf("Get(def456): %v", err)
+	}
+	if got2.Note != "" {
+		t.Errorf("空 note 应回空串,得 %q", got2.Note)
 	}
 }
 

@@ -98,11 +98,13 @@ func Open(dataDir string) (*Store, error) {
 // Close 关闭底层连接。
 func (s *Store) Close() error { return s.db.Close() }
 
-// CreateSubmission 新建一条待审提交,id 由调用方生成(6 位 base36),created_at=当前时间。
-func (s *Store) CreateSubmission(id, title string) error {
+// CreateSubmission 新建一条待审提交,id 由调用方生成(6 位 base36);
+// note 一并入库(留档语义:随记录留档至决策保留期满,不被页面文件
+// 清理连带删除),created_at=当前时间。
+func (s *Store) CreateSubmission(id, title, note string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO submissions (id, title, note, status, created_at) VALUES (?, ?, '', ?, ?)`,
-		id, title, StatusPending, time.Now().Unix(),
+		`INSERT INTO submissions (id, title, note, status, created_at) VALUES (?, ?, ?, ?, ?)`,
+		id, title, note, StatusPending, time.Now().Unix(),
 	)
 	if err != nil {
 		return fmt.Errorf("store: 创建提交 %s: %w", id, err)

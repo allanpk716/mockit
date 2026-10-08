@@ -32,7 +32,7 @@ func (e *apiError) Error() string { return e.msg }
 // submitReq 是 POST /api/submissions 的请求体。
 type submitReq struct {
 	Title    string             `json:"title"`
-	Note     string             `json:"note"` // 不入库(store 无 note 入口),落盘 <data>/{id}/note.txt
+	Note     string             `json:"note"` // 入库 submissions.note(随记录留档至决策保留期满)
 	Variants []submitVariantReq `json:"variants"`
 }
 
@@ -108,7 +108,7 @@ func (s *Server) createSubmission(req *submitReq) (*store.Submission, *apiError)
 		return nil, &apiError{code: code, msg: msg}
 	}
 
-	// 3) 落盘:逐候选写 <data>/{id}/v{n}/;note 非空写 note.txt
+	// 3) 落盘:逐候选写 <data>/{id}/v{n}/
 	for i, p := range ps {
 		vdir := filepath.Join(dir, "v"+strconv.Itoa(i+1))
 		if p.kind == store.KindHTML {
@@ -124,14 +124,10 @@ func (s *Server) createSubmission(req *submitReq) (*store.Submission, *apiError)
 			}
 		}
 	}
-	if strings.TrimSpace(req.Note) != "" {
-		if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte(req.Note), 0o644); err != nil {
-			return fail(500, "写 note 失败: "+err.Error())
-		}
-	}
 
-	// 4) 入库(候选登记);失败回滚目录与记录
-	if err := s.store.CreateSubmission(id, req.Title); err != nil {
+	// 4) 入库(候选登记,note 一并入库——留档 90 天,不随 14 天文件清理丢失);
+	//    失败回滚目录与记录
+	if err := s.store.CreateSubmission(id, req.Title, req.Note); err != nil {
 		return fail(500, "入库失败: "+err.Error())
 	}
 	for i, p := range ps {
@@ -228,12 +224,17 @@ func safeJoin(root, name string) (string, error) {
 	return target, nil
 }
 
-// noteOf 读提交说明(提交时落盘的 <data>/{id}/note.txt;store 不存 note)。
-func (s *Server) noteOf(id string) string {
-	if !validID(id) {
+// noteOf 读提交说明:优先库值(submissions.note,随记录留档 90 天,
+// 不被 14 天文件清理带走);库值为空且存量边车 note.txt 存在时读文件,
+// 兼容 note 入库改造前的老数据。
+func (s *Server) noteOf(sub *store.Submission) string {
+	if sub.Note != "" {
+		return sub.Note
+	}
+	if !validID(sub.ID) {
 		return ""
 	}
-	b, err := os.ReadFile(filepath.Join(s.dataDir, id, "note.txt"))
+	b, err := os.ReadFile(filepath.Join(s.dataDir, sub.ID, "note.txt"))
 	if err != nil {
 		return ""
 	}

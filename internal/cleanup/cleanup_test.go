@@ -27,7 +27,7 @@ func testStore(t *testing.T) *store.Store {
 
 func mustCreate(t *testing.T, s *store.Store, id string) {
 	t.Helper()
-	if err := s.CreateSubmission(id, "标题 "+id); err != nil {
+	if err := s.CreateSubmission(id, "标题 "+id, ""); err != nil {
 		t.Fatalf("CreateSubmission(%s): %v", id, err)
 	}
 }
@@ -184,6 +184,36 @@ func TestRunOnceRecordExpiredAfterDecisionDays(t *testing.T) {
 	}
 	if !isGone(t, s, "oldrec") {
 		t.Error("reviewed_at 超 90 天,记录应删")
+	}
+}
+
+// TestRunOnceReviewedExpiredNoteRetained 记录留档语义:已审提交 14 天
+// 文件清理删掉整个目录(连带旧管道的 note.txt 边车)后,入库的 note
+// 仍随记录留档至决策保留期满,Get 照常读出。
+func TestRunOnceReviewedExpiredNoteRetained(t *testing.T) {
+	s := testStore(t)
+	dataDir := t.TempDir()
+	if err := s.CreateSubmission("oldnote", "带备注的提交", "留档备注"); err != nil {
+		t.Fatalf("CreateSubmission: %v", err)
+	}
+	mustAddVariant(t, s, "oldnote", 1)
+	makePageFiles(t, dataDir, "oldnote") // 铺 v1/index.html + note.txt,模拟旧管道落盘布局
+	if err := s.SaveReview("oldnote", store.DecisionApprove, 0, ""); err != nil {
+		t.Fatalf("SaveReview: %v", err)
+	}
+
+	base := time.Now()
+	cleaned := runOnce(s, dataDir, 14, 90, base.Add(30*24*time.Hour), discardLogger())
+
+	if cleaned != 1 {
+		t.Errorf("清理条数 = %d,想 1", cleaned)
+	}
+	if dirExists(t, filepath.Join(dataDir, "oldnote")) {
+		t.Error("已审超期应删文件:目录仍在")
+	}
+	sub := mustGet(t, s, "oldnote")
+	if sub.Note != "留档备注" {
+		t.Errorf("note 应随记录留档(不随目录清理丢失),得 %q", sub.Note)
 	}
 }
 
