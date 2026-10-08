@@ -59,6 +59,10 @@ func Serve(cfg *config.Config) int {
 	defer logFile.Close()
 	lg := log.New(io.MultiWriter(os.Stderr, logFile), "mockit ", log.LstdFlags)
 
+	// 清理调度:启动即扫 + 每 24 小时一扫(票 05 接线,协调者补)
+	stopCleanup := startCleanup(cfg, st, lg)
+	defer stopCleanup()
+
 	// 端口绑定循环(漂移结果记入 lock)
 	ln, port, err := bindLoop(cfg.Addr, cfg.Port, maxBindAttempts)
 	if err != nil {
