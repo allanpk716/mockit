@@ -1,0 +1,5 @@
+mockit.exe
+*.exe
+*.test
+/dist/
+/data/
