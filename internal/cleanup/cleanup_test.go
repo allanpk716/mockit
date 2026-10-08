@@ -266,14 +266,14 @@ func TestStartRescansOnInterval(t *testing.T) {
 	stop := Start(s, dataDir, 14, 90, discardLogger(), futureClock(base, 30), 25*time.Millisecond)
 	defer stop()
 
-	// 先吃掉首扫
-	mustCreate(t, s, "early01")
+	// 先吃掉首扫(先铺文件后插库:插库瞬间 25ms tick 就会删目录,反过来会与 MkdirAll 赛跑)
 	makePageFiles(t, dataDir, "early01")
+	mustCreate(t, s, "early01")
 	waitFor(t, 8*time.Second, func() bool { return isGone(t, s, "early01") })
 
-	// 首扫已过,late01 只能被后续 ticker 轮扫到
-	mustCreate(t, s, "late01")
+	// 首扫已过,late01 只能被后续 ticker 轮扫到(同样先铺文件后插库)
 	makePageFiles(t, dataDir, "late01")
+	mustCreate(t, s, "late01")
 	waitFor(t, 8*time.Second, func() bool { return isGone(t, s, "late01") })
 }
 
