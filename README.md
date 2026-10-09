@@ -58,6 +58,8 @@ agent → 对话:    把 submit 返回的审核页 URL 贴给用户
 
 ## MCP 接入(CC / Claude Code)
 
+**给 agent 的使用指南**:[AGENT-GUIDE.md](AGENT-GUIDE.md) —— 提交/取结果的完整工作流、错误应对与约束,直接交给接入方的 agent 读,不用读源码。
+
 项目根放 `.mcp.json`(或进 CC Switch 模板,见下节警告),可直接粘贴:
 
 ```json
