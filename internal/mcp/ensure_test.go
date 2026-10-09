@@ -452,8 +452,8 @@ func TestEnsureStartLockTimeoutOutsidePollFails(t *testing.T) {
 	assertNoURL(t, "锁外轮询", err)
 }
 
-// 全链路兜底:resolveBase 对 ensure 错误再做一次 errText 清洗(纵深防御)。
-func TestResolveBaseSanitizesEnsureError(t *testing.T) {
+// 全链路兜底:resolveLock 对 ensure 错误再做一次 errText 清洗(纵深防御)。
+func TestResolveLockSanitizesEnsureError(t *testing.T) {
 	inner := &url.Error{
 		Op:  "Post",
 		URL: "http://127.0.0.1:9/shutdown",
@@ -461,11 +461,11 @@ func TestResolveBaseSanitizesEnsureError(t *testing.T) {
 	}
 	s, _, _ := newTestSrv(t, "")
 	s.ensure = func() (*lifecycle.Lock, error) { return nil, fmt.Errorf("停旧失败: %w", inner) }
-	base, err := s.resolveBase()
-	if err == nil || base != "" {
-		t.Fatalf("应报错: %q %v", base, err)
+	lk, err := s.resolveLock()
+	if err == nil || lk != nil {
+		t.Fatalf("应报错: %v %v", lk, err)
 	}
 	if strings.Contains(err.Error(), "http") {
-		t.Fatalf("resolveBase 错误泄漏 URL:\n%v", err)
+		t.Fatalf("resolveLock 错误泄漏 URL:\n%v", err)
 	}
 }

@@ -39,13 +39,11 @@ type server struct {
 	errOut io.Writer // stderr:只写日志
 
 	// ensure 定位或拉起本机 serve,返回实例 lock;缺省闭包 ensureServer
-	// + defaultSpawnServe,测试注入假实现。
+	// + defaultSpawnServe,测试注入假实现。lock 端口拼内部 API 基址,
+	// lock.base_host+端口拼对外 URL(票 09/D16)。
 	ensure func() (*lifecycle.Lock, error)
 
 	httpc *http.Client
-
-	// baseOverride 非""时直接作为 API 基址(仅测试注入,绕过 ensure 定位)。
-	baseOverride string
 }
 
 // Run 启动 stdio MCP server,阻塞至 stdin EOF,返回进程退出码。

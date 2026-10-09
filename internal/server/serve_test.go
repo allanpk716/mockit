@@ -94,6 +94,11 @@ func TestServePortDriftLockShutdown(t *testing.T) {
 	}
 	defer block.Close()
 
+	// 探测注入为零命中:本机真实网卡不进单测(票 09);零命中 → base_host 留空。
+	oldAddrs := interfaceAddrs
+	interfaceAddrs = func() ([]net.IP, error) { return nil, nil }
+	t.Cleanup(func() { interfaceAddrs = oldAddrs })
+
 	dataDir := t.TempDir()
 	cfg := &config.Config{
 		Port: base, Addr: "127.0.0.1", DataDir: dataDir,
@@ -114,7 +119,7 @@ func TestServePortDriftLockShutdown(t *testing.T) {
 		t.Fatal("lock.token 不应为空")
 	}
 	if lk.BaseHost != "" {
-		t.Fatalf("lock.base_host 应留空(基址语义属后续票),得 %q", lk.BaseHost)
+		t.Fatalf("lock.base_host 应留空(零命中且未配置 external_url),得 %q", lk.BaseHost)
 	}
 	if lk.PID != os.Getpid() {
 		t.Fatalf("lock.pid=%d,应 %d", lk.PID, os.Getpid())

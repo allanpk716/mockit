@@ -41,7 +41,7 @@ type Lock struct {
 	PID       int    `json:"pid"`
 	Version   string `json:"version"`
 	Token     string `json:"token"`
-	BaseHost  string `json:"base_host"` // 手机可达基址 host(票 09 落地探测;票 08 只随锁写入流转)
+	BaseHost  string `json:"base_host"` // 手机可达基址 host(票 09/D16:serve 写入=external_url 或 NetBird 探测;MCP 只读不自探)
 	StartedAt int64  `json:"started_at"`
 }
 

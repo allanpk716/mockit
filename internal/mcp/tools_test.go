@@ -43,6 +43,7 @@ func TestSubmitInlineHTMLPostsB64(t *testing.T) {
 	defer backend.Close()
 
 	s, _, _ := newTestSrv(t, backend.URL)
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
 	html := "<h1>你好</h1>"
 	text, isErr := s.callTool("mockit_submit", mustJSON(t, map[string]any{
 		"title": "登录页",
@@ -72,13 +73,16 @@ func TestSubmitInlineHTMLPostsB64(t *testing.T) {
 	if string(dec) != html {
 		t.Fatalf("b64 解码 = %q, want %q", dec, html)
 	}
-	for _, want := range []string{"ab12cd", "pending", "候选数=1", "暂无链接"} {
+	// 票 09:submit 返回 id + 审核 URL + 候选 URL;端口取实例锁实际端口,
+	// 主机名取 lock.base_host;内部环回地址不得出现。
+	detail := fmt.Sprintf("http://phone.test:%d/s/ab12cd", port)
+	for _, want := range []string{"ab12cd", "pending", "候选数=1", detail, detail + "/v1"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("成功文本缺 %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "http") || strings.Contains(text, "127.0.0.1") {
-		t.Fatalf("成功文本不得含任何 URL(F1):\n%s", text)
+	if strings.Contains(text, "127.0.0.1") {
+		t.Fatalf("成功文本不得泄漏内部环回地址:\n%s", text)
 	}
 }
 
@@ -107,6 +111,7 @@ func TestSubmitPathVariantsKindMapping(t *testing.T) {
 	}
 
 	s, _, _ := newTestSrv(t, backend.URL)
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
 	text, isErr := s.callTool("mockit_submit", mustJSON(t, map[string]any{
 		"title": "多候选",
 		"variants": []map[string]any{
@@ -134,8 +139,18 @@ func TestSubmitPathVariantsKindMapping(t *testing.T) {
 			t.Fatalf("variant%d b64 解码不符: err=%v", i, err)
 		}
 	}
-	if !strings.Contains(text, "候选数=3") || !strings.Contains(text, "暂无链接") {
-		t.Fatalf("成功文本缺候选数或暂无链接说明:\n%s", text)
+	// 票 09:每个候选都应有按 seq 编号的候选页 URL。
+	for _, seq := range []int{1, 2, 3} {
+		want := fmt.Sprintf("http://phone.test:%d/s/zz99zz/v%d", port, seq)
+		if !strings.Contains(text, want) {
+			t.Fatalf("成功文本缺候选页 %q:\n%s", want, text)
+		}
+	}
+	if !strings.Contains(text, "候选数=3") {
+		t.Fatalf("成功文本缺候选数:\n%s", text)
+	}
+	if strings.Contains(text, "127.0.0.1") {
+		t.Fatalf("成功文本不得泄漏内部环回地址:\n%s", text)
 	}
 }
 
@@ -306,7 +321,7 @@ func TestF9SurfacesAsToolError(t *testing.T) {
 	}
 }
 
-// 请求失败路径:baseOverride 指向无人监听的死端口 → 定位成功但请求被拒,
+// 请求失败路径:lock 指向无人监听的死端口 → 定位成功(基址可拼)但请求被拒,
 // 三工具的错误文案不得携带 Go http 客户端错误原文(形如
 // Get "http://127.0.0.1:port/api/submissions": dial tcp ...,F1 红线)。
 func TestRequestFailureTextHasNoURL(t *testing.T) {
@@ -364,5 +379,105 @@ func TestResolveViaEnsureHappyPath(t *testing.T) {
 	}
 	if text != "暂无提交" {
 		t.Fatalf("文本 = %q, want 暂无提交", text)
+	}
+}
+
+// F8:IPv6 字面量按 http://[address]:port 序列化(RFC 3986)。
+func TestSubmitIPv6BaseHostBracketed(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"id":"ab12cd","title":"t","status":"pending","variants":[{"seq":1,"label":"A","kind":"html"}]}`)
+	}))
+	defer backend.Close()
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
+
+	s, _, _ := newTestSrv(t, backend.URL)
+	s.ensure = func() (*lifecycle.Lock, error) {
+		return &lifecycle.Lock{Port: port, BaseHost: "fd00::1"}, nil
+	}
+	text, isErr := s.callTool("mockit_submit", mustJSON(t, map[string]any{
+		"title":    "t",
+		"variants": []map[string]any{{"label": "A", "html": "<b/>"}},
+	}))
+	if isErr {
+		t.Fatalf("提交不应失败: %s", text)
+	}
+	detail := fmt.Sprintf("http://[fd00::1]:%d/s/ab12cd", port)
+	for _, want := range []string{detail, detail + "/v1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("IPv6 URL 应带方括号, 缺 %q:\n%s", want, text)
+		}
+	}
+}
+
+// 基址不可定(lock.base_host 空=歧义/零命中且未配置):submit 返回明确错误,
+// 不发提交请求、不退化 127.0.0.1/机器名。
+func TestSubmitBaseHostUndeterminableErrors(t *testing.T) {
+	var posted bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posted = true
+		_, _ = io.WriteString(w, `{"id":"ab12cd","status":"pending","variants":[]}`)
+	}))
+	defer backend.Close()
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
+
+	s, _, _ := newTestSrv(t, backend.URL)
+	s.ensure = func() (*lifecycle.Lock, error) {
+		return &lifecycle.Lock{Port: port, BaseHost: ""}, nil
+	}
+	text, isErr := s.callTool("mockit_submit", mustJSON(t, map[string]any{
+		"title":    "t",
+		"variants": []map[string]any{{"label": "A", "html": "<b/>"}},
+	}))
+	if !isErr {
+		t.Fatalf("基址不可定应报错, 得成功文本:\n%s", text)
+	}
+	for _, want := range []string{"无法确定手机可达地址", "external_url", "只填域名或 IP,不带端口"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("错误文本缺 %q:\n%s", want, text)
+		}
+	}
+	if posted {
+		t.Fatal("基址不可定时不得发出提交请求(避免无人可审的孤儿提交)")
+	}
+	if strings.Contains(text, "http") || strings.Contains(text, "127.0.0.1") {
+		t.Fatalf("错误文本不得含 URL:\n%s", text)
+	}
+}
+
+// 端口漂移:submit URL 端口恒取实例锁实际端口,漂移后新提交自动跟随(D16)。
+func TestSubmitURLPortFollowsLock(t *testing.T) {
+	b1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"id":"aa11aa","status":"pending","variants":[{"seq":1,"label":"A","kind":"html"}]}`)
+	}))
+	defer b1.Close()
+	b2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"id":"bb22bb","status":"pending","variants":[{"seq":1,"label":"A","kind":"html"}]}`)
+	}))
+	defer b2.Close()
+	p1 := b1.Listener.Addr().(*net.TCPAddr).Port
+	p2 := b2.Listener.Addr().(*net.TCPAddr).Port
+
+	s, _, _ := newTestSrv(t, b1.URL) // ensure 初始指向 p1
+	cur := p1
+	s.ensure = func() (*lifecycle.Lock, error) {
+		return &lifecycle.Lock{Port: cur, BaseHost: "phone.test"}, nil
+	}
+
+	text, isErr := s.callTool("mockit_submit", mustJSON(t, map[string]any{
+		"title": "漂移前", "variants": []map[string]any{{"label": "A", "html": "<b/>"}},
+	}))
+	if isErr || !strings.Contains(text, fmt.Sprintf("http://phone.test:%d/s/aa11aa", p1)) {
+		t.Fatalf("漂移前 URL 端口应取 lock 实际端口 %d: isErr=%v\n%s", p1, isErr, text)
+	}
+
+	cur = p2 // 模拟漂移:实例锁换端口,ensure 复查读到新 lock
+	text, isErr = s.callTool("mockit_submit", mustJSON(t, map[string]any{
+		"title": "漂移后", "variants": []map[string]any{{"label": "A", "html": "<b/>"}},
+	}))
+	if isErr || !strings.Contains(text, fmt.Sprintf("http://phone.test:%d/s/bb22bb", p2)) {
+		t.Fatalf("漂移后 URL 端口应跟随新 lock 端口 %d: isErr=%v\n%s", p2, isErr, text)
+	}
+	if strings.Contains(text, fmt.Sprintf(":%d/", p1)) {
+		t.Fatalf("漂移后不得再出现旧端口:\n%s", text)
 	}
 }

@@ -3,9 +3,10 @@
 //
 // 启动序列(锁分离协议 D17,票 08):
 //
-//	查实例锁(活持有→输家退出;残骸→清理接管)→ 打开 store → 绑端口
-//	(漂移)→ 探测 base_host(票 09)→ O_EXCL 建实例锁写记录(失败关监听
-//	退出非零)→ HTTP 服务至退出信号或 /shutdown。
+//	配置校验(external_url 票 09/D16,前置)→ 查实例锁(活持有→输家退出;
+//	残骸→清理接管)→ 打开 store → 绑端口(漂移)→ 定 base_host
+//	(external_url > NetBird 探测,票 09)→ O_EXCL 建实例锁写记录(失败
+//	关监听退出非零)→ HTTP 服务至退出信号或 /shutdown。
 package server
 
 import (
@@ -20,6 +21,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,8 +48,15 @@ var acquireInstanceLockFn = lifecycle.AcquireInstanceLock
 // Serve 启动常驻 HTTP server,返回进程退出码:
 //
 //	0 — 收到退出信号或 shutdown(token 校验通过)后优雅退出
-//	1 — 启动失败(store 打不开、端口全占、实例锁失败、已有活实例等)
+//	1 — 启动失败(配置非法、store 打不开、端口全占、实例锁失败、已有活实例等)
 func Serve(cfg *config.Config) int {
+	// 配置校验前置(票 09/D16):非法 external_url 启动即报错,
+	// 不接受也不静默剥离,不触碰日志/store/端口/实例锁。
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, "mockit serve: 配置错误:", err)
+		return 1
+	}
+
 	// 日志先行:实例锁检查的结论也要留痕
 	logDir := filepath.Join(cfg.DataDir, "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
@@ -91,8 +100,18 @@ func Serve(cfg *config.Config) int {
 		ln.Close()
 		return 1
 	}
-	// base_host 留空:基址探测属票 09,本票只保证字段随锁写入流转。
-	guard, err := acquireInstance(cfg.DataDir, port, token, lg)
+	// 对外基址主机(票 09/D16 三层):external_url 已在启动时校验,直接用
+	// (与校验同口径 TrimSpace);未配置则探测 NetBird 段唯一命中;
+	// 歧义/零命中留空——server 照常启动,仅 submit 侧在基址不可定时报错。
+	baseHost := strings.TrimSpace(cfg.ExternalURL)
+	if baseHost == "" {
+		if baseHost = detectBaseHost(); baseHost == "" {
+			lg.Println("未配置 external_url 且 100.64.0.0/10 无唯一命中,base_host 留空:submit 将报无法确定手机可达地址")
+		} else {
+			lg.Printf("base_host 取探测地址: %s", baseHost)
+		}
+	}
+	guard, err := acquireInstance(cfg.DataDir, port, token, baseHost, lg)
 	if err != nil {
 		lg.Printf("写实例锁失败,关闭监听退出: %v", err)
 		ln.Close() // 不留孤儿端口
@@ -185,12 +204,14 @@ func checkInstance(dataDir string, lg *log.Logger) int {
 
 // acquireInstance 建实例锁并持有至退出;O_EXCL 冲突时复查一次:
 // 活持有→输家退出;残骸/锁消失→清理后重试一次;再失败则报错(调用方关监听)。
-func acquireInstance(dataDir string, port int, token string, lg *log.Logger) (*lifecycle.InstanceGuard, error) {
+// baseHost 为对外通告主机名(票 09/D16),随 lock.base_host 落盘供 MCP 拼接。
+func acquireInstance(dataDir string, port int, token, baseHost string, lg *log.Logger) (*lifecycle.InstanceGuard, error) {
 	rec := &lifecycle.Lock{
 		Port:      port,
 		PID:       os.Getpid(),
 		Version:   Version,
 		Token:     token,
+		BaseHost:  baseHost,
 		StartedAt: time.Now().Unix(),
 	}
 	g, err := acquireInstanceLockFn(dataDir, rec)

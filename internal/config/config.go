@@ -6,6 +6,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,10 +15,10 @@ import (
 
 // Config 是 mockit serve/mcp 的运行配置。
 type Config struct {
-	Port               int    // 监听端口;被占时 serve 自动 +1 漂移(最多 +10)
+	Port               int    // 监听端口;被占时 serve 自动 +1 漂移,最多尝试 10 个端口(含起始)
 	Addr               string // 监听地址,默认 0.0.0.0
 	DataDir            string // 数据目录,默认 ~/.mockit/
-	ExternalURL        string // 对外通告基址;仅 host(语义定案前不参与 URL 拼接,见票 08/F1)
+	ExternalURL        string // 对外通告基址;仅裸主机名(域名或 IP 字面量,含 IPv6),serve 启动前置校验(票 09/D16)
 	PageRetentionDays  int    // 页面文件保留期,默认 14(锚点=提交时间)
 	DecisionRetentionD int    // 决策记录保留期,默认 90(锚点=审核完成时间)
 }
@@ -75,7 +76,7 @@ func Load(flags []string) (*Config, error) {
 			cfg.DecisionRetentionD = *fc.DecisionRetentionDays
 		}
 		if fc.ExternalURL != nil {
-			cfg.ExternalURL = *fc.ExternalURL // 仅透传,校验属票 08/F1
+			cfg.ExternalURL = *fc.ExternalURL // 原样透传;语义校验在 serve 启动前置执行(票 09/D16)
 		}
 	case os.IsNotExist(err):
 		// 没有配置文件,直接用默认值。
@@ -171,4 +172,62 @@ func expandHome(p, home string) string {
 	default:
 		return p
 	}
+}
+
+// Validate 校验配置语义,serve 启动时前置执行(票 09/D16):非法
+// external_url 启动即报配置错误,不接受、也不静默剥离。
+func (c *Config) Validate() error {
+	return ValidateExternalURL(c.ExternalURL)
+}
+
+// ValidateExternalURL 校验 external_url 语义(D16):空值合法(未配置,
+// 由 serve 走自动探测);否则必须是裸主机名——域名或 IP 字面量(含 IPv6)。
+// 带 scheme(http:// 等)或带端口是配置错误。
+func ValidateExternalURL(raw string) error {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		return nil
+	}
+	if strings.Contains(u, "://") {
+		return fmt.Errorf("config: external_url 不能带 scheme,只填域名或 IP(得 %q)", raw)
+	}
+	if strings.HasPrefix(u, "[") && strings.HasSuffix(u, "]") {
+		return fmt.Errorf("config: external_url 直接填裸 IPv6,不要方括号(得 %q)", raw)
+	}
+	if _, _, err := net.SplitHostPort(u); err == nil {
+		return fmt.Errorf("config: external_url 不能带端口,只填域名或 IP(得 %q)", raw)
+	}
+	if !validHost(u) {
+		return fmt.Errorf("config: external_url 必须是裸域名或 IP 字面量(含 IPv6)(得 %q)", raw)
+	}
+	return nil
+}
+
+// validHost 报告 u 是否为合法裸主机名:IP 字面量(IPv4/IPv6),或由
+// 字母数字与连字符组成的域名(标签 1~63 字符、不以连字符开头/结尾,总长 ≤253)。
+func validHost(u string) bool {
+	if u == "" || len(u) > 253 {
+		return false
+	}
+	if ip := net.ParseIP(u); ip != nil {
+		return true // IPv4 / IPv6 字面量
+	}
+	for _, label := range strings.Split(u, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			switch {
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			case c == '-':
+				if i == 0 || i == len(label)-1 {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }

@@ -241,9 +241,64 @@ func TestLoadExternalURLPassthroughNoValidation(t *testing.T) {
 	writeTestConfig(t, home, `{"external_url": "http://bad host with spaces:9999/x"}`)
 	c, err := Load(nil)
 	if err != nil {
-		t.Fatalf("external_url 不应做校验, 却报错: %v", err)
+		t.Fatalf("external_url 不应在 Load 时校验(校验属 serve 启动前置,票 09), 却报错: %v", err)
 	}
 	if c.ExternalURL != weird {
 		t.Errorf("ExternalURL = %q, want 原样透传 %q", c.ExternalURL, weird)
+	}
+}
+
+// external_url 语义校验(D16/票 09):只接受裸主机名——域名或 IP 字面量
+// (含 IPv6);带 scheme 或端口是配置错误,不接受也不静默剥离。
+func TestValidateExternalURL(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool // true=通过
+	}{
+		{"空值=未配置合法", "", true},
+		{"裸域名", "example.com", true},
+		{"裸单标签主机名", "my-nuc", true},
+		{"大写域名", "My-Host.Example.COM", true},
+		{"裸IPv4", "192.168.1.10", true},
+		{"NetBird段IPv4", "100.100.1.5", true},
+		{"裸IPv6", "fd00::1", true},
+		{"完整IPv6", "2001:db8:0::9", true},
+		{"带scheme http", "http://host", false},
+		{"带scheme https", "https://host", false},
+		{"scheme加端口", "http://host:8321", false},
+		{"带端口", "host:8321", false},
+		{"IPv6带端口", "[fd00::1]:8321", false},
+		{"方括号IPv6", "[fd00::1]", false},
+		{"含空格", "bad host", false},
+		{"下划线", "under_score", false},
+		{"标签连字符开头", "-lead.example.com", false},
+		{"标签连字符结尾", "trail-.example.com", false},
+		{"连续点", "host..com", false},
+		{"结尾点", "host.com.", false},
+		{"斜杠路径", "example.com/mockit", false},
+		{"末组形似端口的合法IPv6字面量(0x8321是十六进制组,非端口)", "fd00::1:8321", true},
+	}
+	for _, c := range cases {
+		err := ValidateExternalURL(c.raw)
+		if c.want && err != nil {
+			t.Errorf("%s: ValidateExternalURL(%q) 应通过, 得 %v", c.name, c.raw, err)
+		}
+		if !c.want && err == nil {
+			t.Errorf("%s: ValidateExternalURL(%q) 应报配置错误", c.name, c.raw)
+		}
+	}
+}
+
+// Config.Validate 是 serve 启动的前置校验入口,透传 external_url 结论。
+func TestConfigValidateCoversExternalURL(t *testing.T) {
+	c := Default()
+	c.ExternalURL = "host:8321"
+	if err := c.Validate(); err == nil {
+		t.Fatal("Config.Validate 应拒绝带端口的 external_url")
+	}
+	c.ExternalURL = "review.example.com"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("合法裸域名应通过: %v", err)
 	}
 }

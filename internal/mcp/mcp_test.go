@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,9 +20,10 @@ import (
 	"mockit/internal/lifecycle"
 )
 
-// newTestSrv 造一个注入了假后端的 server。backendURL 非空时作为
-// API 基址注入(baseOverride);ensure 保持"触达即报错"的哨兵,
-// 用于断言测试没有意外走到 serve 定位。
+// newTestSrv 造一个注入了假后端的 server。backendURL 非空时注入 ensure,
+// 返回指向该端口的实例 lock(base_host=phone.test)——票 09 起 submit 需
+// lock 的 base_host/实际端口拼对外 URL,内部 API 基址也由 lock 端口拼出。
+// 需要自定义 lock(如 IPv6/空 base_host)的用例拿到 s 后覆写 s.ensure。
 func newTestSrv(t *testing.T, backendURL string) (*server, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
@@ -33,7 +37,17 @@ func newTestSrv(t *testing.T, backendURL string) (*server, *bytes.Buffer, *bytes
 		httpc: &http.Client{Timeout: 5 * time.Second},
 	}
 	if backendURL != "" {
-		s.baseOverride = backendURL
+		_, portStr, err := net.SplitHostPort(strings.TrimPrefix(backendURL, "http://"))
+		if err != nil {
+			t.Fatalf("backendURL 缺端口: %q", backendURL)
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			t.Fatalf("backendURL 端口非法: %q", backendURL)
+		}
+		s.ensure = func() (*lifecycle.Lock, error) {
+			return &lifecycle.Lock{Port: port, PID: os.Getpid(), Version: Version, Token: "t", BaseHost: "phone.test"}, nil
+		}
 	}
 	return s, out, errOut
 }

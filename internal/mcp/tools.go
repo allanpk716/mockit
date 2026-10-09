@@ -2,8 +2,11 @@ package mcp
 
 // 三工具(mockit_submit / mockit_get_review / mockit_list)与 serve 定位。
 //
-// F1 红线:本夜任何工具输出都不得拼接/返回 URL——submit 成功文案必须带
-// "暂无链接"说明;get_review/list 同样只出纯文字(F6)。
+// URL 红线(F1 由 D16 取代后的现行口径,票 09):
+//   - submit 成功输出对外 URL:http:// + lock.base_host + : + 实例锁实际
+//     端口(D16 唯一拼接规则;IPv6 加方括号,F8)——这是产品输出,允许;
+//   - 一切错误文案不得携带内部 URL(127.0.0.1 环回等,经 errText 清洗);
+//   - get_review/list 一律不含 URL(F6 定案不变)。
 
 import (
 	"bytes"
@@ -12,12 +15,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"mockit/internal/lifecycle"
 )
 
 // maxFileBytes 单候选文件上限(spec 内容管道:单文件 ≤20MB)。
@@ -63,7 +69,7 @@ func toolDefs() []toolDef {
 	return []toolDef{
 		{
 			Name:        "mockit_submit",
-			Description: "提交 1~6 个候选 mock(单 HTML 或 zip)供用户对比拍板;返回提交 id 与状态(本夜不含 URL,见 F1/票 09)。",
+			Description: "提交 1~6 个候选 mock(单 HTML 或 zip)供用户对比拍板;返回提交 id、审核页 URL 与各候选页 URL(手机可达;无法确定对外地址时报错,请提示用户在 config 配 external_url)。",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -130,22 +136,38 @@ func (s *server) callTool(name string, rawArgs json.RawMessage) (string, bool) {
 	}
 }
 
-// resolveBase 定位 serve:测试 override → ensure(复用/拉起,票 08)。
-// 返回的基址仅内部拼接请求用,绝不进入工具输出;ensure 错误再过一道
-// errText(纵深防御,杜绝内部 URL 泄漏)。
-func (s *server) resolveBase() (string, error) {
-	if s.baseOverride != "" {
-		return s.baseOverride, nil
-	}
+// resolveLock 定位 serve(票 08 ensure 协议:复用/停旧换新/拉起),返回
+// 实例 lock——端口拼内部 API 基址,base_host+端口拼对外 URL(票 09)。
+// MCP 只读锁,不自探网卡。ensure 错误再过一道 errText(纵深防御,
+// 杜绝内部 URL 泄漏进工具输出)。
+func (s *server) resolveLock() (*lifecycle.Lock, error) {
 	if s.ensure == nil {
-		return "", errors.New("serve 定位未配置(ensure 缺失)")
+		return nil, errors.New("serve 定位未配置(ensure 缺失)")
 	}
 	lk, err := s.ensure()
 	if err != nil {
 		s.logf("定位/拉起 serve 失败: %v", err)
-		return "", errors.New(errText(err))
+		return nil, errors.New(errText(err))
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d", lk.Port), nil
+	return lk, nil
+}
+
+// apiBase 由实例锁实际端口拼内部 API 基址(仅内部请求用,绝不进入工具输出)。
+// 端口恒取 lock.Port:配置端口永不进入 URL,漂移自动跟随(D16)。
+func apiBase(lk *lifecycle.Lock) string {
+	return fmt.Sprintf("http://127.0.0.1:%d", lk.Port)
+}
+
+// publicBaseURL 按 D16 唯一拼接规则构造对外基址:
+// http:// + 主机名(lock.base_host)+ : + 实例锁实际端口。
+// IPv6 字面量经 net.JoinHostPort 自动序列化为 http://[address]:port(F8/RFC 3986)。
+// base_host 为空(歧义/零命中且未配置 external_url)→ 明确报错,
+// 绝不默默退化 127.0.0.1/机器名。
+func publicBaseURL(lk *lifecycle.Lock) (string, error) {
+	if lk == nil || lk.BaseHost == "" {
+		return "", errors.New("无法确定手机可达地址,请在 config 配 external_url(只填域名或 IP,不带端口)")
+	}
+	return "http://" + net.JoinHostPort(lk.BaseHost, strconv.Itoa(lk.Port)), nil
 }
 
 // ---- HTTP 薄封装 ----
@@ -262,7 +284,13 @@ func (s *server) toolSubmit(raw json.RawMessage) (string, bool) {
 			ContentB64: base64.StdEncoding.EncodeToString(content),
 		})
 	}
-	base, err := s.resolveBase()
+	// 先定位 serve 并确认对外基址可拼(票 09):不可定时报错且不发提交,
+	// 避免产生一条用户拿不到链接的孤儿提交。
+	lk, err := s.resolveLock()
+	if err != nil {
+		return err.Error(), true
+	}
+	pubBase, err := publicBaseURL(lk)
 	if err != nil {
 		return err.Error(), true
 	}
@@ -270,7 +298,7 @@ func (s *server) toolSubmit(raw json.RawMessage) (string, bool) {
 	if err != nil {
 		return "请求序列化失败: " + err.Error(), true
 	}
-	status, respBody, err := s.apiPost(base, "/api/submissions", body)
+	status, respBody, err := s.apiPost(apiBase(lk), "/api/submissions", body)
 	if err != nil {
 		return fmt.Sprintf("提交失败(请求 serve): %v", errText(err)), true
 	}
@@ -281,9 +309,23 @@ func (s *server) toolSubmit(raw json.RawMessage) (string, bool) {
 	if err := json.Unmarshal(respBody, &r); err != nil {
 		return "提交响应解析失败: " + err.Error(), true
 	}
-	// F1:本夜结果不含任何 URL;"暂无链接"为票面规定文案。
-	return fmt.Sprintf("已提交:id=%s 状态=%s 候选数=%d\nURL 功能待评审约束 F1 定案后启用(票 09),暂无链接。",
-		r.ID, statusText(r.Status), len(r.Variants)), false
+	// 票 09/D16:submit 结果出 URL(产品输出,允许);页面路由 /s/{id} 与
+	// /s/{id}/v{seq}。端口已含在 pubBase(实例锁实际端口)。
+	var b strings.Builder
+	fmt.Fprintf(&b, "已提交:id=%s 状态=%s 候选数=%d\n审核页: %s/s/%s",
+		r.ID, statusText(r.Status), len(r.Variants), pubBase, r.ID)
+	if len(r.Variants) > 0 {
+		b.WriteString("\n候选页:")
+		for _, v := range r.Variants {
+			u := fmt.Sprintf("%s/s/%s/v%d", pubBase, r.ID, v.Seq)
+			if v.Label != "" {
+				fmt.Fprintf(&b, "\n  [%d] %s: %s", v.Seq, v.Label, u)
+			} else {
+				fmt.Fprintf(&b, "\n  [%d] %s", v.Seq, u)
+			}
+		}
+	}
+	return b.String(), false
 }
 
 // variantContent 把候选参数变成 (内容字节, kind):html 内联直用;path 按扩展名读本地文件。
@@ -353,11 +395,11 @@ func (s *server) toolGetReview(raw json.RawMessage) (string, bool) {
 	if strings.TrimSpace(a.ID) == "" {
 		return "id 不能为空", true
 	}
-	base, err := s.resolveBase()
+	lk, err := s.resolveLock()
 	if err != nil {
 		return err.Error(), true
 	}
-	status, body, err := s.apiGet(base, "/api/submissions/"+url.PathEscape(a.ID))
+	status, body, err := s.apiGet(apiBase(lk), "/api/submissions/"+url.PathEscape(a.ID))
 	if err != nil {
 		return fmt.Sprintf("查询失败(请求 serve): %v", errText(err)), true
 	}
@@ -399,7 +441,7 @@ func (s *server) toolList(raw json.RawMessage) (string, bool) {
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "参数解析失败: " + err.Error(), true
 	}
-	base, err := s.resolveBase()
+	lk, err := s.resolveLock()
 	if err != nil {
 		return err.Error(), true
 	}
@@ -414,7 +456,7 @@ func (s *server) toolList(raw json.RawMessage) (string, bool) {
 	if enc := q.Encode(); enc != "" {
 		path += "?" + enc
 	}
-	status, body, err := s.apiGet(base, path)
+	status, body, err := s.apiGet(apiBase(lk), path)
 	if err != nil {
 		return fmt.Sprintf("查询失败(请求 serve): %v", errText(err)), true
 	}
