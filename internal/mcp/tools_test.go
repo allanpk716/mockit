@@ -6,6 +6,7 @@ package mcp
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -269,71 +270,39 @@ func TestUnknownTool(t *testing.T) {
 	}
 }
 
-// lockPathFixture 直接写 JSON 夹具文件(不依赖票 01 的 lifecycle 实现),
-// 返回注入 readLock 用的解析函数(测试侧自行反序列化,只用 Lock 类型)。
-func lockPathFixture(t *testing.T, port int) (string, func(string) (*lifecycle.Lock, error)) {
-	t.Helper()
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "server.lock")
-	lockJSON := fmt.Sprintf(`{"port":%d,"pid":1,"version":"0.1.0","token":"tok","base_host":"","started_at":1}`, port)
-	if err := os.WriteFile(lockPath, []byte(lockJSON), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	parse := func(string) (*lifecycle.Lock, error) {
-		b, err := os.ReadFile(lockPath)
-		if err != nil {
-			return nil, err
-		}
-		var l lifecycle.Lock
-		if err := json.Unmarshal(b, &l); err != nil {
-			return nil, err
-		}
-		return &l, nil
-	}
-	return lockPath, parse
-}
-
-func TestServeNotRunningWhenLockMissing(t *testing.T) {
+// ensure 失败(如拉起失败)应作为工具错误浮出,且不携带 URL。
+func TestEnsureFailureSurfacesAsToolError(t *testing.T) {
 	s, _, _ := newTestSrv(t, "")
-	s.readLock = lifecycle.ReadLock // 真实路径:DataDir 是无 lock 文件的临时目录
-	s.ping = nil
+	s.ensure = func() (*lifecycle.Lock, error) {
+		return nil, errors.New("拉起 serve 失败: 启动 serve 进程失败: 权限不足")
+	}
 	text, isErr := s.callTool("mockit_list", json.RawMessage("{}"))
 	if !isErr {
-		t.Fatalf("lock 缺失应报错: %s", text)
+		t.Fatalf("拉起失败应报错: %s", text)
 	}
-	if !strings.Contains(text, "serve 未运行,请先手工运行 mockit serve") {
-		t.Fatalf("lock 缺失文案不符:\n%s", text)
+	if !strings.Contains(text, "拉起 serve 失败") {
+		t.Fatalf("文案不符:\n%s", text)
 	}
 	if strings.Contains(text, "http") || strings.Contains(text, "://") {
-		t.Fatalf("lock 缺失文案不得含 URL(F1 红线):\n%s", text)
+		t.Fatalf("错误文案不得含 URL(F1 红线):\n%s", text)
 	}
 }
 
-func TestServeNotRunningWhenPingFails(t *testing.T) {
-	// 占一个端口再放掉 → 大概率无人监听的死端口。
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadPort := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-
-	_, parse := lockPathFixture(t, deadPort)
+// F9(serve 活但 ping 不通)浮出为工具错误,提示人工处置且无 URL。
+func TestF9SurfacesAsToolError(t *testing.T) {
 	s, _, _ := newTestSrv(t, "")
-	s.readLock = parse
-	s.ping = pingServe // 默认真实探活
+	s.ensure = func() (*lifecycle.Lock, error) {
+		return nil, errors.New(f9Hint)
+	}
 	text, isErr := s.callTool("mockit_list", json.RawMessage("{}"))
 	if !isErr {
-		t.Fatalf("ping 不通应报错: %s", text)
+		t.Fatalf("F9 应报错: %s", text)
 	}
-	if !strings.Contains(text, "serve 未运行,请先手工运行 mockit serve") {
-		t.Fatalf("ping 不通文案不符:\n%s", text)
-	}
-	if !strings.Contains(text, "ping") {
-		t.Fatalf("ping 不通文案应注明 ping 环节:\n%s", text)
+	if !strings.Contains(text, "ping 不通") || !strings.Contains(text, "人工处置") {
+		t.Fatalf("文案应含 ping 不通与人工处置:\n%s", text)
 	}
 	if strings.Contains(text, "http") || strings.Contains(text, "://") {
-		t.Fatalf("ping 不通文案泄漏 Go http 客户端错误原文(F1 红线,不得含 URL):\n%s", text)
+		t.Fatalf("错误文案不得含 URL(F1 红线):\n%s", text)
 	}
 }
 
@@ -377,30 +346,21 @@ func TestRequestFailureTextHasNoURL(t *testing.T) {
 	}
 }
 
-// 全真路径:lock 夹具(端口=假 serve)→ 默认 ping 探活通过 → 工具正常拿数据。
-func TestResolveViaLockAndPingHappyPath(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, `{"version":"0.1.0"}`)
-	})
-	mux.HandleFunc("/api/submissions", func(w http.ResponseWriter, r *http.Request) {
+// 全真路径:ensure 返回活实例 lock → 工具正常拿数据。
+func TestResolveViaEnsureHappyPath(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `[]`)
-	})
-	backend := httptest.NewServer(mux)
+	}))
 	defer backend.Close()
-	port := backend.URL[strings.LastIndex(backend.URL, ":")+1:]
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
 
-	var p int
-	if _, err := fmt.Sscanf(port, "%d", &p); err != nil {
-		t.Fatal(err)
-	}
-	_, parse := lockPathFixture(t, p)
 	s, _, _ := newTestSrv(t, "")
-	s.readLock = parse
-	s.ping = pingServe
+	s.ensure = func() (*lifecycle.Lock, error) {
+		return &lifecycle.Lock{Port: port, PID: os.Getpid(), Version: Version, Token: "t"}, nil
+	}
 	text, isErr := s.callTool("mockit_list", json.RawMessage("{}"))
 	if isErr {
-		t.Fatalf("lock+ping 全通不应失败: %s", text)
+		t.Fatalf("ensure 定位成功不应失败: %s", text)
 	}
 	if text != "暂无提交" {
 		t.Fatalf("文本 = %q, want 暂无提交", text)

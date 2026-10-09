@@ -1,7 +1,11 @@
 // Package server 实现 mockit serve:常驻 HTTP server(页面展示、提交管道、
 // 审核记录、静态文件)。
 //
-// 本票(03)刻意不做:URL 拼接与基址语义(票 09/08)、进程拉起与互斥(票 07)。
+// 启动序列(锁分离协议 D17,票 08):
+//
+//	查实例锁(活持有→输家退出;残骸→清理接管)→ 打开 store → 绑端口
+//	(漂移)→ 探测 base_host(票 09)→ O_EXCL 建实例锁写记录(失败关监听
+//	退出非零)→ HTTP 服务至退出信号或 /shutdown。
 package server
 
 import (
@@ -33,19 +37,18 @@ const maxBindAttempts = 10
 // shutdownGrace 优雅退出的收尾期限。
 const shutdownGrace = 5 * time.Second
 
+// instanceCheckBackoff 是"活持有但 ping 不通"时的复查退避;包级变量供测试缩短。
+var instanceCheckBackoff = 800 * time.Millisecond
+
+// acquireInstanceLockFn 建实例锁;包级变量供测试注入失败/冲突场景。
+var acquireInstanceLockFn = lifecycle.AcquireInstanceLock
+
 // Serve 启动常驻 HTTP server,返回进程退出码:
 //
 //	0 — 收到退出信号或 shutdown(token 校验通过)后优雅退出
-//	1 — 启动失败(store 打不开、端口全占、lock 写失败等)
+//	1 — 启动失败(store 打不开、端口全占、实例锁失败、已有活实例等)
 func Serve(cfg *config.Config) int {
-	st, err := store.Open(cfg.DataDir)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "mockit serve:", err)
-		return 1
-	}
-	defer st.Close()
-
-	// 日志:<data>/logs/serve.log,同时回显 stderr
+	// 日志先行:实例锁检查的结论也要留痕
 	logDir := filepath.Join(cfg.DataDir, "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "mockit serve: 创建日志目录失败:", err)
@@ -59,7 +62,19 @@ func Serve(cfg *config.Config) int {
 	defer logFile.Close()
 	lg := log.New(io.MultiWriter(os.Stderr, logFile), "mockit ", log.LstdFlags)
 
-	// 清理调度:启动即扫 + 每 24 小时一扫(票 05 接线,协调者补)
+	// 实例锁检查:每机唯一 serve(D17)。输家在触碰 store/端口前退出。
+	if code := checkInstance(cfg.DataDir, lg); code != 0 {
+		return code
+	}
+
+	st, err := store.Open(cfg.DataDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mockit serve:", err)
+		return 1
+	}
+	defer st.Close()
+
+	// 清理调度:启动即扫 + 每 24 小时一扫
 	stopCleanup := startCleanup(cfg, st, lg)
 	defer stopCleanup()
 
@@ -73,19 +88,17 @@ func Serve(cfg *config.Config) int {
 	token, err := genToken()
 	if err != nil {
 		lg.Println(err)
+		ln.Close()
 		return 1
 	}
-	// base_host 留空:基址语义属后续票(F1),本票不做任何 URL 拼接
-	if err := lifecycle.WriteLock(cfg.DataDir, &lifecycle.Lock{
-		Port:      port,
-		PID:       os.Getpid(),
-		Version:   Version,
-		Token:     token,
-		StartedAt: time.Now().Unix(),
-	}); err != nil {
-		lg.Println("写 lock 失败:", err)
+	// base_host 留空:基址探测属票 09,本票只保证字段随锁写入流转。
+	guard, err := acquireInstance(cfg.DataDir, port, token, lg)
+	if err != nil {
+		lg.Printf("写实例锁失败,关闭监听退出: %v", err)
+		ln.Close() // 不留孤儿端口
 		return 1
 	}
+	defer guard.Release()
 
 	s := newServer(cfg.DataDir, st, token, lg)
 	httpSrv := &http.Server{Handler: s.Handler()}
@@ -120,6 +133,111 @@ func Serve(cfg *config.Config) int {
 	<-serveErr // 等 Serve goroutine 收尾(ErrServerClosed)
 	lg.Println("serve 已退出")
 	return code
+}
+
+// checkInstance 执行启动序列的实例锁检查,返回 0=继续启动,非 0=退出码:
+//   - 无 server.lock → 继续;
+//   - 活持有且 ping 通 → 打印"已有实例在端口 X"后输家退出;
+//   - 活持有且 ping 不通 → 短暂退避复查后退出,不清理(保守);
+//   - 无持有者残留(锁可获取+PID 死+ping 不通)→ 清残骸继续。
+func checkInstance(dataDir string, lg *log.Logger) int {
+	p, err := lifecycle.ProbeLock(dataDir)
+	if err != nil {
+		lg.Printf("探测实例锁失败,退出: %v", err)
+		return 1
+	}
+	if !p.Exists {
+		return 0
+	}
+	if p.LiveHeld() {
+		if p.Alive {
+			lg.Printf("已有实例在端口 %d(pid %d),本进程退出", lockPort(p), lockPID(p))
+			return 1
+		}
+		// 活持有但 ping 不通:可能是对方仍在启动窗口,退避复查一次;
+		// 仍活持有则退出且不清理(不误伤可能正在写锁/起服务的对端)。
+		lg.Printf("实例锁被持有但 ping 不通(端口 %d),退避 %v 后复查", lockPort(p), instanceCheckBackoff)
+		time.Sleep(instanceCheckBackoff)
+		p2, err := lifecycle.ProbeLock(dataDir)
+		if err != nil {
+			lg.Printf("复查实例锁失败,退出: %v", err)
+			return 1
+		}
+		if p2.Exists && p2.LiveHeld() {
+			if p2.Alive {
+				lg.Printf("已有实例在端口 %d(pid %d),本进程退出", lockPort(p2), lockPID(p2))
+				return 1
+			}
+			lg.Printf("实例锁仍被持有且 ping 不通(端口 %d),退出且不清理;如确认无实例可手工删除 server.lock", lockPort(p2))
+			return 1
+		}
+		p = p2 // 对端消失:按复查结果走残骸分支
+	}
+	if p.DeadResidue() {
+		if err := lifecycle.CleanResidue(dataDir); err != nil {
+			lg.Printf("清理实例锁残骸失败,退出: %v", err)
+			return 1
+		}
+		lg.Println("已清理无持有者的实例锁残骸,继续启动")
+	}
+	return 0
+}
+
+// acquireInstance 建实例锁并持有至退出;O_EXCL 冲突时复查一次:
+// 活持有→输家退出;残骸/锁消失→清理后重试一次;再失败则报错(调用方关监听)。
+func acquireInstance(dataDir string, port int, token string, lg *log.Logger) (*lifecycle.InstanceGuard, error) {
+	rec := &lifecycle.Lock{
+		Port:      port,
+		PID:       os.Getpid(),
+		Version:   Version,
+		Token:     token,
+		StartedAt: time.Now().Unix(),
+	}
+	g, err := acquireInstanceLockFn(dataDir, rec)
+	if err == nil {
+		return g, nil
+	}
+	if !errors.Is(err, lifecycle.ErrLockExists) {
+		return nil, err
+	}
+	// O_EXCL 失败:复查后输家自行退出(或清理重试)
+	p, perr := lifecycle.ProbeLock(dataDir)
+	if perr != nil {
+		return nil, fmt.Errorf("实例锁创建冲突且复查失败: %w", perr)
+	}
+	switch {
+	case p.LiveHeld():
+		lg.Printf("已有实例在端口 %d(pid %d),本进程退出", lockPort(p), lockPID(p))
+		return nil, errors.New("已有实例在运行,输家退出")
+	case p.DeadResidue():
+		if cerr := lifecycle.CleanResidue(dataDir); cerr != nil {
+			return nil, cerr
+		}
+		lg.Println("已清理无持有者的实例锁残骸,重试建锁")
+		return acquireInstanceLockFn(dataDir, rec)
+	case !p.Exists:
+		// 冲突窗口里对端建了又删:直接重试一次
+		return acquireInstanceLockFn(dataDir, rec)
+	default:
+		// Exists 且非活持有非残骸(状态不明):保守退出
+		return nil, errors.New("实例锁状态不明,保守退出")
+	}
+}
+
+// lockPort 取探测结果里的端口,未知记 0。
+func lockPort(p *lifecycle.Probe) int {
+	if p.Rec != nil {
+		return p.Rec.Port
+	}
+	return 0
+}
+
+// lockPID 取探测结果里的 PID,未知记 0。
+func lockPID(p *lifecycle.Probe) int {
+	if p.Rec != nil {
+		return p.Rec.PID
+	}
+	return 0
 }
 
 // bindLoop 从 basePort 起逐个尝试 TCP 绑定,被占则 +1;全部失败返回最后一次错误。

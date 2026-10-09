@@ -1,9 +1,8 @@
 // Package mcp 实现 stdio MCP server:agent 提交/查询的唯一通道(D3)。
 //
 // 协议:行分隔 JSON-RPC 2.0。stdout 只输出协议响应,一切日志走 stderr。
-// serve 定位:读 <data>/server.lock 取端口并 ping 探活;失败即明确报
-// "serve 未运行,请先手工运行 mockit serve"(进程拉起/互斥/版本换新属票 08,
-// 本包绝不 spawn 进程)。
+// serve 定位:ensure-server(锁分离协议 D17,票 08)——读 server.lock
+// 复用/停旧换新/冷启动拉起(经 start.lock 互斥,spawn 零闪窗)。
 package mcp
 
 import (
@@ -33,21 +32,19 @@ const (
 	codeInvalidParams  = -32602
 )
 
-// server 承载一次 stdio MCP 会话;readLock/ping/baseOverride 为测试注入点。
+// server 承载一次 stdio MCP 会话;ensure 为 serve 定位/拉起注入点。
 type server struct {
 	cfg    *config.Config
 	out    io.Writer // stdout:只写协议响应
 	errOut io.Writer // stderr:只写日志
 
-	// readLock 缺省 lifecycle.ReadLock;测试注入自造 lock 夹具,不依赖票 01 实现。
-	readLock func(dataDir string) (*lifecycle.Lock, error)
-	// ping 缺省本包 pingServe(500ms 探活)。lifecycle.Ping 属票 01 交付,
-	// 为不阻塞编译本包自带等价实现;票 01 落地后可整体切换。
-	ping func(port int) error
+	// ensure 定位或拉起本机 serve,返回实例 lock;缺省闭包 ensureServer
+	// + defaultSpawnServe,测试注入假实现。
+	ensure func() (*lifecycle.Lock, error)
 
 	httpc *http.Client
 
-	// baseOverride 非""时直接作为 API 基址(仅测试注入,绕过 lock/ping 定位)。
+	// baseOverride 非""时直接作为 API 基址(仅测试注入,绕过 ensure 定位)。
 	baseOverride string
 }
 
@@ -57,12 +54,13 @@ func Run(cfg *config.Config) int {
 		cfg = config.Default()
 	}
 	s := &server{
-		cfg:      cfg,
-		out:      os.Stdout,
-		errOut:   os.Stderr,
-		readLock: lifecycle.ReadLock,
-		ping:     pingServe,
-		httpc:    &http.Client{Timeout: 60 * time.Second},
+		cfg:    cfg,
+		out:    os.Stdout,
+		errOut: os.Stderr,
+		ensure: func() (*lifecycle.Lock, error) {
+			return ensureServer(cfg, defaultSpawnServe)
+		},
+		httpc: &http.Client{Timeout: 60 * time.Second},
 	}
 	s.logf("mockit mcp %s 就绪(dataDir=%q)", Version, cfg.DataDir)
 	return s.loop(os.Stdin)

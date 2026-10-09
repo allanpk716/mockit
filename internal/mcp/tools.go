@@ -18,14 +18,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // maxFileBytes 单候选文件上限(spec 内容管道:单文件 ≤20MB)。
 const maxFileBytes = 20 << 20
-
-// serveNotRunHint 是 serve 定位失败(lock 缺失或 ping 不通)的统一提示文案。
-const serveNotRunHint = "serve 未运行,请先手工运行 mockit serve"
 
 // errText 把错误压成可给 agent 看的一行文本(F1:工具输出零 URL)。
 // Go http 客户端请求失败的错误原文自带完整 URL(形如
@@ -134,41 +130,22 @@ func (s *server) callTool(name string, rawArgs json.RawMessage) (string, bool) {
 	}
 }
 
-// resolveBase 定位 serve:测试 override → lock → ping。
-// 错误文案只写 host:port,不带 scheme(F1:工具输出零 URL)。
+// resolveBase 定位 serve:测试 override → ensure(复用/拉起,票 08)。
+// 返回的基址仅内部拼接请求用,绝不进入工具输出;ensure 错误再过一道
+// errText(纵深防御,杜绝内部 URL 泄漏)。
 func (s *server) resolveBase() (string, error) {
 	if s.baseOverride != "" {
 		return s.baseOverride, nil
 	}
-	if s.readLock == nil {
-		return "", fmt.Errorf("%s(未配置 lock 读取)", serveNotRunHint)
+	if s.ensure == nil {
+		return "", errors.New("serve 定位未配置(ensure 缺失)")
 	}
-	lock, err := s.readLock(s.cfg.DataDir)
+	lk, err := s.ensure()
 	if err != nil {
-		return "", fmt.Errorf("%s(读取 server.lock 失败: %v)", serveNotRunHint, err)
+		s.logf("定位/拉起 serve 失败: %v", err)
+		return "", errors.New(errText(err))
 	}
-	if s.ping != nil {
-		if err := s.ping(lock.Port); err != nil {
-			return "", fmt.Errorf("%s(ping 127.0.0.1:%d 不通: %v)", serveNotRunHint, lock.Port, errText(err))
-		}
-	}
-	return fmt.Sprintf("http://127.0.0.1:%d", lock.Port), nil
-}
-
-// pingServe 对 serve 的 /ping 做 500ms 探活(与票 01 lifecycle.Ping 同语义;
-// 该 URL 仅内部使用,绝不进入工具输出)。
-func pingServe(port int) error {
-	c := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/ping", port))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("状态码 %d", resp.StatusCode)
-	}
-	return nil
+	return fmt.Sprintf("http://127.0.0.1:%d", lk.Port), nil
 }
 
 // ---- HTTP 薄封装 ----

@@ -17,8 +17,8 @@ import (
 	"mockit/internal/lifecycle"
 )
 
-// newTestSrv 造一个注入了假后端/假 lock 的 server。backendURL 非空时作为
-// API 基址注入(baseOverride);readLock/ping 保持“触达即报错”的哨兵,
+// newTestSrv 造一个注入了假后端的 server。backendURL 非空时作为
+// API 基址注入(baseOverride);ensure 保持"触达即报错"的哨兵,
 // 用于断言测试没有意外走到 serve 定位。
 func newTestSrv(t *testing.T, backendURL string) (*server, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
@@ -27,10 +27,9 @@ func newTestSrv(t *testing.T, backendURL string) (*server, *bytes.Buffer, *bytes
 		cfg:    &config.Config{DataDir: t.TempDir()},
 		out:    out,
 		errOut: errOut,
-		readLock: func(string) (*lifecycle.Lock, error) {
-			return nil, errors.New("测试不应触达 lock")
+		ensure: func() (*lifecycle.Lock, error) {
+			return nil, errors.New("测试不应触达 ensure")
 		},
-		ping:  func(int) error { return errors.New("测试不应触达 ping") },
 		httpc: &http.Client{Timeout: 5 * time.Second},
 	}
 	if backendURL != "" {

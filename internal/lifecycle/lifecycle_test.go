@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -26,20 +25,36 @@ func freePort(t *testing.T) int {
 	return port
 }
 
+// writeLockJSON 写一个 server.lock JSON 夹具(测试造状态用;
+// 生产路径是 AcquireInstanceLock,不走这里)。
+func writeLockJSON(t *testing.T, dataDir string, l *Lock) {
+	t.Helper()
+	b, err := json.Marshal(l)
+	if err != nil {
+		t.Fatalf("序列化 lock 失败: %v", err)
+	}
+	if err := os.WriteFile(LockPath(dataDir), b, 0o644); err != nil {
+		t.Fatalf("写 lock 夹具失败: %v", err)
+	}
+}
+
 // deadLock 写一个指向无服务端口的 lock 文件。
 func deadLock(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	err := WriteLock(dir, &Lock{Port: freePort(t), Token: "tok"})
-	if err != nil {
-		t.Fatalf("WriteLock 失败: %v", err)
-	}
+	writeLockJSON(t, dir, &Lock{Port: freePort(t), Token: "tok"})
 	return dir
 }
 
 func TestLockPath(t *testing.T) {
 	if got, want := LockPath("C:/data"), "C:/data/server.lock"; got != want {
 		t.Errorf("LockPath = %q, want %q", got, want)
+	}
+}
+
+func TestStartLockPath(t *testing.T) {
+	if got, want := StartLockPath("C:/data"), "C:/data/start.lock"; got != want {
+		t.Errorf("StartLockPath = %q, want %q", got, want)
 	}
 }
 
@@ -59,19 +74,17 @@ func TestLockJSONFieldNames(t *testing.T) {
 	}
 }
 
-func TestWriteReadRoundTrip(t *testing.T) {
+func TestReadLockRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	in := &Lock{
 		Port:      9000,
 		PID:       4242,
 		Version:   "0.1.0",
 		Token:     "secret-token",
-		BaseHost:  "nuc10.example:9000",
+		BaseHost:  "nuc10.example",
 		StartedAt: 1728000000,
 	}
-	if err := WriteLock(dir, in); err != nil {
-		t.Fatalf("WriteLock 失败: %v", err)
-	}
+	writeLockJSON(t, dir, in)
 	out, err := ReadLock(dir)
 	if err != nil {
 		t.Fatalf("ReadLock 失败: %v", err)
@@ -106,44 +119,6 @@ func TestReadLockBadJSONErrors(t *testing.T) {
 	}
 }
 
-func TestWriteLockAtomicNoLeftovers(t *testing.T) {
-	dir := t.TempDir()
-	if err := WriteLock(dir, &Lock{Port: 1, PID: 1, Version: "1", Token: "a"}); err != nil {
-		t.Fatalf("第一次 WriteLock 失败: %v", err)
-	}
-	// 覆盖写:模拟 serve 重启改写 lock。
-	if err := WriteLock(dir, &Lock{Port: 2, PID: 2, Version: "2", Token: "b"}); err != nil {
-		t.Fatalf("覆盖 WriteLock 失败: %v", err)
-	}
-	out, err := ReadLock(dir)
-	if err != nil {
-		t.Fatalf("ReadLock 失败: %v", err)
-	}
-	if out.Port != 2 || out.Token != "b" {
-		t.Errorf("覆盖写结果不对: %+v", out)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("ReadDir 失败: %v", err)
-	}
-	if len(entries) != 1 || entries[0].Name() != "server.lock" {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Errorf("原子写不应残留临时文件, 目录内容: %v", names)
-	}
-	// 目标文件不应是半个:内容必须是完整 JSON。
-	b, err := os.ReadFile(filepath.Join(dir, "server.lock"))
-	if err != nil {
-		t.Fatalf("读 lock 失败: %v", err)
-	}
-	var l Lock
-	if err := json.Unmarshal(b, &l); err != nil {
-		t.Errorf("lock 文件内容不是完整 JSON: %v(%q)", err, b)
-	}
-}
-
 func TestPingAlive(t *testing.T) {
 	var gotPath, gotMethod string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -154,9 +129,7 @@ func TestPingAlive(t *testing.T) {
 	defer srv.Close()
 	port := srv.Listener.Addr().(*net.TCPAddr).Port
 	dir := t.TempDir()
-	if err := WriteLock(dir, &Lock{Port: port, Token: "tok"}); err != nil {
-		t.Fatalf("WriteLock 失败: %v", err)
-	}
+	writeLockJSON(t, dir, &Lock{Port: port, Token: "tok"})
 	res, err := Ping(dir)
 	if err != nil {
 		t.Fatalf("Ping 报错: %v", err)
@@ -178,9 +151,7 @@ func TestPingAlivePlainTextFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 	dir := t.TempDir()
-	if err := WriteLock(dir, &Lock{Port: srv.Listener.Addr().(*net.TCPAddr).Port}); err != nil {
-		t.Fatalf("WriteLock 失败: %v", err)
-	}
+	writeLockJSON(t, dir, &Lock{Port: srv.Listener.Addr().(*net.TCPAddr).Port})
 	res, err := Ping(dir)
 	if err != nil {
 		t.Fatalf("Ping 报错: %v", err)
@@ -207,9 +178,7 @@ func TestPingNon200NotAlive(t *testing.T) {
 	}))
 	defer srv.Close()
 	dir := t.TempDir()
-	if err := WriteLock(dir, &Lock{Port: srv.Listener.Addr().(*net.TCPAddr).Port}); err != nil {
-		t.Fatalf("WriteLock 失败: %v", err)
-	}
+	writeLockJSON(t, dir, &Lock{Port: srv.Listener.Addr().(*net.TCPAddr).Port})
 	res, err := Ping(dir)
 	if err != nil {
 		t.Fatalf("Ping 非 200 不应报错, got: %v", err)
@@ -242,9 +211,7 @@ func TestShutdownCarriesToken(t *testing.T) {
 	}))
 	defer srv.Close()
 	dir := t.TempDir()
-	if err := WriteLock(dir, &Lock{Port: srv.Listener.Addr().(*net.TCPAddr).Port, Token: "secret-token"}); err != nil {
-		t.Fatalf("WriteLock 失败: %v", err)
-	}
+	writeLockJSON(t, dir, &Lock{Port: srv.Listener.Addr().(*net.TCPAddr).Port, Token: "secret-token"})
 	if err := Shutdown(dir); err != nil {
 		t.Fatalf("Shutdown 应成功, got: %v", err)
 	}
@@ -271,9 +238,7 @@ func TestShutdownTokenMismatchRejected(t *testing.T) {
 	}))
 	defer srv.Close()
 	dir := t.TempDir()
-	if err := WriteLock(dir, &Lock{Port: srv.Listener.Addr().(*net.TCPAddr).Port, Token: "wrong"}); err != nil {
-		t.Fatalf("WriteLock 失败: %v", err)
-	}
+	writeLockJSON(t, dir, &Lock{Port: srv.Listener.Addr().(*net.TCPAddr).Port, Token: "wrong"})
 	if err := Shutdown(dir); err == nil {
 		t.Error("非 200 响应 Shutdown 应报错")
 	}
@@ -288,7 +253,13 @@ func TestShutdownNoLockErrors(t *testing.T) {
 
 func TestShutdownDeadPortErrors(t *testing.T) {
 	dir := deadLock(t)
-	if err := Shutdown(dir); err == nil {
-		t.Error("无服务端口 Shutdown 应报错")
+	err := Shutdown(dir)
+	if err == nil {
+		t.Fatal("无服务端口 Shutdown 应报错")
+	}
+	// 红线:错误文本不得携带内部 URL(Go http 客户端错误原文形如
+	// Post "http://127.0.0.1:port/shutdown": dial tcp ...,会泄漏给 MCP 工具层)。
+	if strings.Contains(err.Error(), "http") || strings.Contains(err.Error(), "://") {
+		t.Fatalf("Shutdown 错误文本泄漏 URL:\n%v", err)
 	}
 }

@@ -2,8 +2,11 @@
 //
 // 双模式单二进制:
 //
-//	mockit serve  — 常驻 HTTP server(页面展示、审核记录、清理)
-//	mockit mcp    — stdio MCP server(agent 唯一提交/查询通道;自动确保本机 serve 存活)
+//	mockit serve  — 常驻 HTTP server(页面展示、审核记录、清理);每机唯一
+//	                实例(实例锁 D17:O_EXCL 建锁+OS 锁持有至退出)
+//	mockit mcp    — stdio MCP server(agent 唯一提交/查询通道);工具调用时
+//	                自动定位或拉起本机 serve(ensure-server 锁分离协议:同版本
+//	                复用、版本不符停旧换新、冷启动经 start.lock 互斥拉起)
 package main
 
 import (
