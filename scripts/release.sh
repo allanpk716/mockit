@@ -54,6 +54,13 @@ if [ "$BUILT_VERSION" != "$EXPECTED_VERSION" ]; then
 fi
 echo "    version 输出 ${BUILT_VERSION},与 ${TAG} 对齐。"
 
+# 三处 Version 常量一致性(main / internal/mcp / internal/server,防只改一处致 MCP 握手与 /ping 版本失真)
+for vf in main.go internal/mcp/mcp.go internal/server/server.go; do
+  cv="$(grep -oP 'const Version = "\K[^"]+' "$vf")"
+  [ "$cv" = "$EXPECTED_VERSION" ] || fail "Version 常量不一致:${vf} = \"${cv}\"(期望 ${EXPECTED_VERSION});三处须同步修改。"
+done
+echo "    三处 Version 常量一致,均为 ${EXPECTED_VERSION}。"
+
 # ---------- 前置:三文档齐备检查(缺失即明确报错,不进入耗时的交叉构建) ----------
 for doc in "${DOCS[@]}"; do
   [ -f "$doc" ] || fail "缺文档:${doc} 不存在。发版四件套要求三文档齐备(仓根 INSTALL.md、AGENT-GUIDE.md、skills/mockit/SKILL.md),请先就位再组装。"
