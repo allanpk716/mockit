@@ -104,6 +104,7 @@ done
 echo "        ${RELEASE_DIR}/INSTALL.md \\"
 echo "        ${RELEASE_DIR}/AGENT-GUIDE.md \\"
 echo "        ${RELEASE_DIR}/SKILL.md \\"
+echo "        ${RELEASE_DIR}/SHA256SUMS.txt \\"
 echo "        --title \"mockit ${TAG}\" \\"
 echo "        --notes \"mock 页面审核闭环服务 ${TAG}:四平台二进制 + INSTALL.md(安装引导)+ AGENT-GUIDE.md(agent 使用指南)+ SKILL.md(技能文件),SHA256SUMS.txt 供下载后核对,安装请让目标机器 agent 按最新 release 的 INSTALL.md 执行。\""
 echo

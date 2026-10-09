@@ -2,7 +2,7 @@
 
 > 入口话术:在目标机器上,用户对本机 agent 说一句——**"按 mockit 最新 release 的 INSTALL.md 装"**。agent 照本文档逐步执行;人肉照做同样成立。装完后该机所有项目零逐项目配置(用户级 MCP 配置 + 全局技能,一次安装全机生效)。
 
-release 页:<https://github.com/allanpk716/mockit/releases>(四平台二进制 + INSTALL.md + AGENT-GUIDE.md + SKILL.md,同 tag 对齐,自 v0.1.1 起)。
+release 页:<https://github.com/allanpk716/mockit/releases>(四平台二进制 + INSTALL.md + AGENT-GUIDE.md + SKILL.md,同 tag 对齐,自 v0.1.1 起;另附 SHA256SUMS.txt 供下载后核对)。
 
 ## 适用范围与前置条件
 
