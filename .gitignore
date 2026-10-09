@@ -3,3 +3,5 @@ mockit.exe
 *.test
 /dist/
 /data/
+
+/.xcheck/

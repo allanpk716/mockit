@@ -31,7 +31,7 @@ import (
 )
 
 // Version 与 main.go 的 Version 常量保持同步(勿 import main;两处同步维护)。
-const Version = "0.1.0"
+const Version = "0.1.1"
 
 // maxBindAttempts 端口漂移尝试次数:配置端口起,被占 +1,最多这多个(D8)。
 const maxBindAttempts = 10

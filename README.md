@@ -18,7 +18,7 @@ go build -o mockit.exe .   # 依赖已 vendor,离线可构建
 
 mockit serve      # 模式一:常驻 HTTP server(页面展示、审核记录、自动清理)
 mockit mcp        # 模式二:stdio MCP server(agent 提交/查询的唯一通道)
-mockit version    # 打印版本,当前 0.1.0
+mockit version    # 打印版本,当前 0.1.1
 ```
 
 `mockit serve` 启动后:
@@ -30,7 +30,7 @@ mockit version    # 打印版本,当前 0.1.0
 ### 典型工作流
 
 ```
-agent 所在机器:  项目 .mcp.json 配好 mockit(见下节)   # 或直接跑 mockit mcp
+agent 所在机器:  mockit 已装好(用户级 ~/.claude.json,见下节)   # 或直接跑 mockit mcp
 agent:           调 mockit_submit                      # serve 未起时 MCP 自动拉起
 agent → 对话:    把 submit 返回的审核页 URL 贴给用户
 手机:            点开 URL 拍板
@@ -60,13 +60,13 @@ agent → 对话:    把 submit 返回的审核页 URL 贴给用户
 
 **给 agent 的使用指南**:[AGENT-GUIDE.md](AGENT-GUIDE.md) —— 提交/取结果的完整工作流、错误应对与约束,直接交给接入方的 agent 读,不用读源码。
 
-项目根放 `.mcp.json`(或进 CC Switch 模板,见下节警告),可直接粘贴:
+按 [INSTALL.md](INSTALL.md) 装完后,二进制已进 PATH 并按平台重命名(Windows `mockit.exe` / macOS·Linux `mockit`),用户级 `~/.claude.json` 已合并 mockit——所有项目零逐项目配置,配置行四平台统一:
 
 ```json
-{"mcpServers":{"mockit":{"command":"<mockit.exe 绝对路径>","args":["mcp"]}}}
+{"mcpServers":{"mockit":{"command":"mockit","args":["mcp"]}}}
 ```
 
-`command` 按机器替换成 mockit.exe 的绝对路径,如 `"C:/WorkSpace/agent/mockit/mockit.exe"`(正斜杠即可)。
+例外手段:需在项目内钉死版本时,项目根放 `.mcp.json`(`command` 写 mockit 可执行文件的绝对路径),或进 CC Switch 模板(见下节警告)。
 
 MCP 面为行分隔 JSON-RPC 2.0(stdio),支持 initialize / ping / tools/list / tools/call,日志走 stderr(不污染协议通道)。三个工具:
 
@@ -82,10 +82,19 @@ MCP 与 serve 必须同机:MCP 读 `<data>/server.lock` 定位端口并 ping 探
 
 ### CC Switch 模板警告(必读)
 
-CC Switch 切换供应商时会**全量覆盖** `~/.claude/settings.json`——历史事故多起,直接写进去的 MCP 配置会被抹掉。mockit 的 MCP 配置二选一:
+CC Switch 切换供应商时会**全量覆盖** `~/.claude/settings.json`——历史事故多起,直接写进去的 MCP 配置会被抹掉。
 
-- 进 CC Switch 的模板,让它每次覆盖时带上;
-- 或放项目级 `.mcp.json`(不受 CC Switch 影响,推荐)。
+mockit 不受影响:安装引导([INSTALL.md](INSTALL.md))把 MCP 配置写进**用户级 `~/.claude.json`**——与 CC Switch 覆盖的 `settings.json` 是不同文件,实测共存不冲突。
+
+例外手段:若需项目内钉死版本,可放项目级 `.mcp.json`(不受 CC Switch 影响);或进 CC Switch 的模板,让它每次覆盖时带上。
+
+## 分发到其他机器
+
+一句话入口:让目标机器的 agent 按 release 附带的 [INSTALL.md](INSTALL.md) 装即可,人肉照做同样成立。
+
+release 地址:[github.com/allanpk716/mockit/releases](https://github.com/allanpk716/mockit/releases),自 v0.1.1 起,公开仓公开下载。每个 release 附四件套、同 tag 版本对齐:四平台二进制(`mockit-windows-amd64.exe` / `mockit-darwin-amd64` / `mockit-darwin-arm64` / `mockit-linux-amd64`)+ INSTALL.md + AGENT-GUIDE.md + 技能文件(`skills/mockit/SKILL.md`)。
+
+公开下载不改变安全姿态:mockit 服务无鉴权,仍只在受信网络(NetBird 网内)运行,勿暴露公网(见下文"安全边界"节)。
 
 ## 配置
 

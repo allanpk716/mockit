@@ -222,7 +222,7 @@ func TestServeAcquireFailAfterBindClosesListener(t *testing.T) {
 func TestServeOExclLoserExitsAfterRecheck(t *testing.T) {
 	// 赢家:真 /ping 服务 + 真 OS 锁
 	winnerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"version":"0.1.0"}`))
+		_, _ = w.Write([]byte(`{"version":"` + Version + `"}`))
 	}))
 	defer winnerSrv.Close()
 	winnerPort := winnerSrv.Listener.Addr().(*net.TCPAddr).Port

@@ -600,7 +600,7 @@ func TestPing(t *testing.T) {
 	}
 	var pj map[string]string
 	decodeJSON(t, resp, &pj)
-	if pj["version"] != "0.1.0" {
+	if pj["version"] != "0.1.1" {
 		t.Fatalf("ping 版本错: %q", pj["version"])
 	}
 }
