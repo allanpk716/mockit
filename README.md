@@ -96,6 +96,17 @@ release 地址:[github.com/allanpk716/mockit/releases](https://github.com/allanp
 
 公开下载不改变安全姿态:mockit 服务无鉴权,仍只在受信网络(NetBird 网内)运行,勿暴露公网(见下文"安全边界"节)。
 
+## 发版(自动化)
+
+推送 `v*` tag 触发 GitHub Actions([goreleaser](.github/workflows/release.yml)):跑全仓测试 → 版本守门 → 四平台交叉构建 → 自动发布 release(四件套 + `SHA256SUMS.txt`)。
+
+- **打 tag 前必须把三处 `Version` 常量同步改成 tag 版本**(`main.go` / `internal/mcp/mcp.go` / `internal/server/server.go`,版本是 const,构建期注入不进去)——CI 与本地 `scripts/release.sh` 都有守门,不一致直接失败。
+- 本地不想发版只想组装核对:`./scripts/release.sh`(干跑,打印完整 `gh release create` 命令不执行)。
+
+```bash
+git tag v0.1.1 && git push origin v0.1.1   # CI 接管,出 release
+```
+
 ## 配置
 
 优先级:默认值 < `~/.mockit/config.json` < 环境变量。配置文件所有键均可省略;示例:

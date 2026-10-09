@@ -1,0 +1,45 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # 守门:tag 必须与三处 Version 常量一致(版本是 const,ldflags 注不进去;
+      # 不一致说明只改了 tag 没同步常量,直接失败避免发出版本自报错乱的 release)
+      - name: tag 与三处 Version 常量一致性守门
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          for f in main.go internal/mcp/mcp.go internal/server/server.go; do
+            cv="$(grep -oP 'const Version = "\K[^"]+' "$f")"
+            if [ "$cv" != "$v" ]; then
+              echo "::error::Version 常量不一致:${f} = \"${cv}\",tag ${GITHUB_REF_NAME} 期望 ${v}(三处须同步修改)"
+              exit 1
+            fi
+          done
+          echo "三处 Version 常量一致:${v}"
+
+      - run: go test ./...
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
