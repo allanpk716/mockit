@@ -7,7 +7,7 @@ Go 单二进制,双模式,零外部依赖(SQLite 驱动已 vendor,离线可构�
 ## 核心闭环(四步)
 
 1. **agent 提交** — agent 调 MCP 工具 `mockit_submit`,提交 1~6 个候选(单 HTML 或 zip,单文件 ≤20MB);
-2. **贴地址** — 用户在手机浏览器打开审核页面(同一 NetBird 网络)。※ 此环节当前无自动 URL,见下文[暂未启用](#暂未启用);
+2. **贴地址** — submit 直接返回审核页 URL(主机名自动探测本机 NetBird 网段,或用 `external_url` 指定),agent 贴在对话里,用户手机(同一 NetBird 网络)点开;
 3. **手机拍板** — 用户在列表页点开提交,逐个候选全屏对比,底部投票条裁决(approve / reject / choose+选中的候选),可附批注;
 4. **取结果** — agent 调 `mockit_get_review` 拿到状态/裁决/选中候选/批注,继续干活。
 
@@ -27,15 +27,18 @@ mockit version    # 打印版本,当前 0.1.0
 - 写 `<data>/server.lock`(JSON:port / pid / version / token / base_host / started_at),供 MCP 定位。
 - Ctrl+C 或 `kill` 优雅退出;另支持 `POST /shutdown`(需 lock 内 token)。
 
-### 典型工作流(当前形态)
+### 典型工作流
 
 ```
-终端 1:  mockit serve                    # 先手工起 serve(见"暂未启用")
-终端 2:  mockit mcp                      # 或由 CC 经 .mcp.json 自动拉起
-手机:    http://<本机 NetBird IP>:8321/  # 列表页,点开对应提交拍板
+agent 所在机器:  项目 .mcp.json 配好 mockit(见下节)   # 或直接跑 mockit mcp
+agent:           调 mockit_submit                      # serve 未起时 MCP 自动拉起
+agent → 对话:    把 submit 返回的审核页 URL 贴给用户
+手机:            点开 URL 拍板
 ```
 
-agent 调 `mockit_submit` 后收到的是"已提交 id=X 状态=pending(待审) 候选数=N(暂无链接)"——不含 URL,用户需按上面地址手工打开列表页点进去。
+`mockit_submit` 返回 id + 审核页 URL + 各候选 URL。URL = 主机名(自动探测本机 NetBird 网段 100.64.0.0/10 唯一命中 IPv4,或配置的 `external_url`)+ `server.lock` 记载的实际端口(端口漂移自动跟随,配置端口永不进入 URL)。探测歧义/零命中且未配置 `external_url` 时,submit 明确报错提示配置(server 与页面本身照常可用),不会默默退化成本机地址。
+
+手工 `mockit serve` 仍然可用;serve 已在跑时 MCP 直接复用,MCP 与 serve 版本不符时自动停旧起新。
 
 ### 数据目录
 
@@ -67,11 +70,11 @@ MCP 面为行分隔 JSON-RPC 2.0(stdio),支持 initialize / ping / tools/list / 
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
-| `mockit_submit` | `title`(必填)、`note`(可选)、`variants`(1~6 个,每个 `label` 必填 + `html`(内联)或 `path`(本地 `.html`/`.htm`/`.zip`)二选一) | 提交待审;返回 id 与状态,**不含 URL** |
+| `mockit_submit` | `title`(必填)、`note`(可选)、`variants`(1~6 个,每个 `label` 必填 + `html`(内联)或 `path`(本地 `.html`/`.htm`/`.zip`)二选一) | 提交待审;返回 id、状态、审核页 URL 与各候选 URL |
 | `mockit_get_review` | `id` | 取回状态/裁决/选中候选/批注 |
 | `mockit_list` | `status`(`pending`/`reviewed`,可选)、`limit`(可选) | 提交简列 |
 
-MCP 与 serve 必须同机:MCP 读 `<data>/server.lock` 定位端口并 ping 探活;serve 没跑时工具明确报"serve 未运行,请先手工运行 mockit serve"。
+MCP 与 serve 必须同机:MCP 读 `<data>/server.lock` 定位端口并 ping 探活。serve 未起时 **MCP 自动拉起**(两把锁分离协议:启动互斥锁保证并发冷启动只拉一个实例,实例锁由 serve 持有至退出;serve 活但无响应时工具明确报错提示人工处置)。
 
 **dsh 侧**:dsh 的 MCP 配置格式等其 MCP 支持定案后在 NUC10 另配,此处不给样例。
 
@@ -104,7 +107,7 @@ CC Switch 切换供应商时会**全量覆盖** `~/.claude/settings.json`——�
 | `data_dir` | `MOCKIT_DATA_DIR` | `~/.mockit` | 数据目录;支持 `~` 展开,最终解析为绝对路径 |
 | `page_retention_days` | `MOCKIT_PAGE_RETENTION_D` | `14` | 页面文件保留天数(锚点=提交时间) |
 | `decision_retention_days` | `MOCKIT_DECISION_RETENTION_D` | `90` | 决策记录保留天数(锚点=审核完成时间) |
-| `external_url` | (无环境变量) | 空 | **当前仅透传存储,无任何语义**,待票 09(F1)定案 |
+| `external_url` | (无环境变量) | 空 | 对外 URL 的主机名,**只接受裸主机名**(域名或 IP 字面量,含 IPv6;带端口或 `http://` 前缀启动即报配置错误);留空=自动探测本机 NetBird 网段(100.64.0.0/10)唯一命中 IPv4,歧义/零命中时 submit 报错提示配置 |
 
 ## HTTP 面(手机侧)
 
@@ -135,11 +138,8 @@ CC Switch 切换供应商时会**全量覆盖** `~/.claude/settings.json`——�
 - **零推送**:服务器不会通知用户;"有新提交待拍板"的提醒由 agent 在对话里以纯文字给出。
 - **服务器不做构建**:agent 负责把页面做成最终形态(单 HTML 或 zip)再提交;serve 只存、只展示。
 
-## 暂未启用(如实说明)
+## 已知取舍(如实说明)
 
-以下两项的底层约束在评审中,本夜**未实现**,README 不承诺其行为:
-
-- **URL 自动拼接**(票 09 / 约束 F1):`mockit_submit` 只返回"已提交 id=X(暂无链接)",任何工具输出都不含 URL;`external_url` 配置键仅透传存储,无语义。用户需手工打开 `http://<本机 NetBird IP>:<实际端口>/` 拍板。
-- **MCP 自动拉起 serve**(票 08 / 约束 F2,启动互斥/进程拉起协议):`mockit mcp` **不会**自动拉起 serve——使用前先在终端手工运行 `mockit serve`;serve 不在时工具报"serve 未运行,请先手工运行 mockit serve"。
-
-两票待评审约束解除后恢复,届时本文档同步更新。
+- **端口漂移后旧 URL 失效**:server 重启若发生端口漂移,此前贴出的未审链接会 404(提交数据仍在);agent 重新提交取新 URL,或用户从根路径(列表页)进入。
+- **进程号复用的极端场景**:serve 异常退出后,若其进程号恰好被系统复用给无关进程,残留的 `server.lock` 不会被自动清理,需手工删除该文件——宁可保守不误清活实例。
+- **MCP 拉起的 serve 因配置错误退出时**,工具报错不含 serve 的原始报错文本;手工运行 `mockit serve` 可看到具体原因。
