@@ -13,6 +13,8 @@
   --bar-h:104px; /* JS 按 #bar 实测高度覆写 */
 }
 *{box-sizing:border-box}
+/* hidden 兜底:作者样式(如 #x{display:flex})优先级高于 UA 的 [hidden]{display:none},会让 hidden 失效 */
+[hidden]{display:none!important}
 html,body{margin:0;padding:0;height:100%}
 body{
   background:var(--bg); color:var(--text); overflow:hidden;
