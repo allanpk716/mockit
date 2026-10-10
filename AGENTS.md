@@ -6,7 +6,7 @@
 
 ### Issue tracker
 
-Issue 跟踪走本地 markdown：`.scratch/<feature>/spec.md` + `issues/NN-<slug>.md`。
+Issue 跟踪走 GitHub Issues（`allanpk716/mockit`，用 `gh` CLI）；`.scratch/` 下的存量票仅作历史记录。
 见 `docs/agents/issue-tracker.md`。
 
 ### Triage labels
