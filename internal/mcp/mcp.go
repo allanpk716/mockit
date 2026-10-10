@@ -20,7 +20,7 @@ import (
 )
 
 // Version 与 main 包的 Version 常量保持同步(main 不可导入,此处复制;改动需两处同改)。
-const Version = "0.1.1"
+const Version = "0.1.2"
 
 // defaultProtocolVersion 是客户端 initialize 未携带 protocolVersion 时的回显缺省值。
 const defaultProtocolVersion = "2024-11-05"

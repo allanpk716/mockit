@@ -20,7 +20,7 @@ import (
 )
 
 // Version 是二进制版本;MCP 握手据此判断是否停旧起新。
-const Version = "0.1.1"
+const Version = "0.1.2"
 
 func main() {
 	if len(os.Args) < 2 {
