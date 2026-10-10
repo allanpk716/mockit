@@ -55,6 +55,9 @@ func TestWebPagesSkeleton(t *testing.T) {
 	for _, p := range pages {
 		// 手机优先 viewport
 		mustContain(t, p.body, p.name, `width=device-width, initial-scale=1`)
+		// issue #2 回归:作者样式 #stage-msg{display:flex} 曾盖过 UA 的 [hidden],
+		// 空遮罩永久盖住 iframe 致候选页整页空白;各页须带 hidden 兜底
+		mustContain(t, p.body, p.name, `[hidden]{display:none!important}`)
 		// 验收:无任何外网资源引用(内联单文件,禁外部脚本/样式/绝对地址)
 		for _, bad := range []string{"http://", "https://", "<script src=", "<link "} {
 			if strings.Contains(p.body, bad) {
