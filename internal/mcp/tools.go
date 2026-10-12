@@ -1,6 +1,7 @@
 package mcp
 
-// 三工具(mockit_submit / mockit_get_review / mockit_list)与 serve 定位。
+// 四工具(mockit_submit / mockit_get_review / mockit_list /
+// mockit_upgrade)与 serve 定位;mockit_upgrade 实现在 upgrade_tool.go。
 //
 // URL 红线(F1 由 D16 取代后的现行口径,票 09):
 //   - submit 成功输出对外 URL:http:// + lock.base_host + : + 实例锁实际
@@ -124,6 +125,17 @@ func toolDefs() []toolDef {
 				},
 			},
 		},
+		{
+			Name:        "mockit_upgrade",
+			Description: "升级或查看 mockit 版本:check_only=true 只查当前/最新版本不安装;默认执行完整升级(可用 version 指定目标版本 vX.Y.Z,含降级)。仅在用户明确要求升级或查看版本时调用,勿自发升级。",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"version":    map[string]any{"type": "string", "description": "目标版本 vX.Y.Z(可选;省略升到最新;降级须显式指定)"},
+					"check_only": map[string]any{"type": "boolean", "description": "只查询当前/最新版本,不安装(可选)"},
+				},
+			},
+		},
 	}
 }
 
@@ -140,8 +152,10 @@ func (s *server) callTool(ctx context.Context, name string, rawArgs json.RawMess
 		return s.toolGetReview(ctx, rawArgs)
 	case "mockit_list":
 		return s.toolList(ctx, rawArgs)
+	case "mockit_upgrade":
+		return s.toolUpgrade(ctx, rawArgs)
 	default:
-		return fmt.Sprintf("未知工具 %q(可用:mockit_submit / mockit_get_review / mockit_list)", name), true
+		return fmt.Sprintf("未知工具 %q(可用:mockit_submit / mockit_get_review / mockit_list / mockit_upgrade)", name), true
 	}
 }
 

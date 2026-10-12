@@ -21,6 +21,7 @@ import (
 
 	"mockit/internal/config"
 	"mockit/internal/lifecycle"
+	"mockit/internal/upgrade"
 )
 
 // Version 与 main 包的 Version 常量保持同步(main 不可导入,此处复制;改动需两处同改)。
@@ -52,6 +53,15 @@ type server struct {
 	// notices 每进程一次的附加提示(票 13/ADR 0001):工具结果末尾追加,
 	// 每类(kind)每进程至多附一次;#11 的新版提醒复用此机制。
 	notices *noticeBoard
+
+	// up 是 mockit_upgrade 工具与后台新版检查的依赖(票 #16);nil 时
+	// 工具报未配置、后台检查不进行。生产由 Run 构造,测试注入假 release。
+	up *upgradeDeps
+
+	// upd 是后台新版检查的进程内状态(在飞/已升级标记,票 #16);
+	// onCheckDone 是每次后台检查收尾的回调,仅为测试同步用,生产为 nil。
+	upd        updateCheck
+	onCheckDone func(upgrade.Result)
 
 	// 并发与串行化(规格 #4 票 08):工具调用各自在 goroutine 里执行,
 	// stdout 响应经 writeMu 串行化(一行一条完整 JSON,不交错);
@@ -93,6 +103,7 @@ func Run(cfg *config.Config) int {
 		},
 		httpc: &http.Client{Timeout: 60 * time.Second},
 		notices: newNoticeBoard(),
+		up:     prodUpgradeDeps(cfg),
 	}
 	s.logf("mockit mcp %s 就绪(dataDir=%q)", Version, cfg.DataDir)
 	return s.loop(os.Stdin)
@@ -238,6 +249,12 @@ func (s *server) handleToolCall(id json.RawMessage, params json.RawMessage) {
 	if err := json.Unmarshal(params, &p); err != nil || p.Name == "" {
 		s.reply(id, nil, &rpcError{Code: codeInvalidParams, Message: "tools/call 缺少 name 或参数非法"})
 		return
+	}
+	// 后台新版检查(票 #16):在处理点同步判活、异步执行,不阻塞本次
+	// 调用;mockit_upgrade 自身即查询/升级入口,不另起后台检查,避免
+	// 同请求并发重复查与升完又提醒。
+	if p.Name != "mockit_upgrade" {
+		s.maybeCheckUpdate()
 	}
 	// 规格 #4 票 08:工具调用在独立 goroutine 里执行,慢调用不再堵住读循环
 	// (ping / notifications/cancelled 随时可进);响应经 reply 串行写出,

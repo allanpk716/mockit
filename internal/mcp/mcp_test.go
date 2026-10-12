@@ -130,11 +130,11 @@ func TestProtocolRoundTripInitializeToolsListToolsCall(t *testing.T) {
 		t.Fatalf("capabilities 缺 tools: %v", initRes["capabilities"])
 	}
 
-	// tools/list:三个工具,各带 inputSchema。
+	// tools/list:四个工具,各带 inputSchema。
 	listRes := wantNoErrorResp(t, envs[1])
 	tools, _ := listRes["tools"].([]any)
-	if len(tools) != 3 {
-		t.Fatalf("tools 数 = %d, want 3", len(tools))
+	if len(tools) != 4 {
+		t.Fatalf("tools 数 = %d, want 4", len(tools))
 	}
 	names := map[string]bool{}
 	for _, tl := range tools {
@@ -145,7 +145,7 @@ func TestProtocolRoundTripInitializeToolsListToolsCall(t *testing.T) {
 			t.Fatalf("工具 %v 缺 inputSchema", m["name"])
 		}
 	}
-	for _, want := range []string{"mockit_submit", "mockit_get_review", "mockit_list"} {
+	for _, want := range []string{"mockit_submit", "mockit_get_review", "mockit_list", "mockit_upgrade"} {
 		if !names[want] {
 			t.Fatalf("缺工具 %s, 实得 %v", want, names)
 		}
