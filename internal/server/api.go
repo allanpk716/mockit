@@ -295,7 +295,8 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 批注规则(票 06):打回去掉首尾空白后必须非空;任何裁决的批注
-	// 上限 2000 字(按字符计,非字节)。只拦待审新请求;旧数据不迁移,
+	// 上限 2000 字(按字符计,非字节)。校验与落库同用去空白后的文本
+	// (前端同口径先 trim 再计数),只拦待审新请求;旧数据不迁移,
 	// 已落库的空批注打回记录照常展示。批注去首尾空白后落库。
 	comment := strings.TrimSpace(req.Comment)
 	if cur.Status == store.StatusPending {
@@ -303,7 +304,7 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "打回必须写批注,说明哪里不行、往哪改")
 			return
 		}
-		if utf8.RuneCountInString(req.Comment) > maxCommentRunes {
+		if utf8.RuneCountInString(comment) > maxCommentRunes {
 			writeErr(w, http.StatusBadRequest, "批注超过 2000 字上限(按字符计)")
 			return
 		}

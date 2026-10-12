@@ -863,3 +863,28 @@ func TestShutdownToken(t *testing.T) {
 		t.Fatal("对 token 应触发停止")
 	}
 }
+
+// TestReviewCommentTrimThenCount 评审修复:批注长度校验与落库同用去首尾
+// 空白后的文本——2000 字中文外加首尾空白应 200(先前按未去空白原文
+// 计数会误 400);去空白后仍超 2000 字才 400。
+func TestReviewCommentTrimThenCount(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+
+	id := mustSubmit(t, ts, htmlVariant("A", "a"))
+	resp := postJSON(t, ts, "/api/review", reviewIn{ID: id, Decision: store.DecisionReject, Comment: " \n\t" + strings.Repeat("改", 2000) + " \n\t"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("打回 2000 字+首尾空白应 200,得 %d: %s", resp.StatusCode, drain(t, resp))
+	}
+	var d detailOut
+	decodeJSON(t, resp, &d)
+	if want := strings.Repeat("改", 2000); d.Comment != want {
+		t.Fatalf("落库批注应为去空白后的 2000 字原文,得 %d 字", len([]rune(d.Comment)))
+	}
+
+	idB := mustSubmit(t, ts, htmlVariant("A", "a"))
+	resp = postJSON(t, ts, "/api/review", reviewIn{ID: idB, Decision: store.DecisionReject, Comment: "  " + strings.Repeat("改", 2001) + "  "})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("去空白后 2001 字仍应 400,得 %d: %s", resp.StatusCode, drain(t, resp))
+	}
+	drain(t, resp)
+}
