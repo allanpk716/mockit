@@ -10,6 +10,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -119,18 +120,19 @@ func toolDefs() []toolDef {
 	}
 }
 
-// callTool 分发工具调用;返回 (结果文本, 是否工具级错误)。
-func (s *server) callTool(name string, rawArgs json.RawMessage) (string, bool) {
+// callTool 分发工具调用;返回 (结果文本, 是否工具级错误)。ctx 随调用
+// 下发到 HTTP 请求,收到取消通知即中断(规格 #4 票 08)。
+func (s *server) callTool(ctx context.Context, name string, rawArgs json.RawMessage) (string, bool) {
 	if len(rawArgs) == 0 {
 		rawArgs = json.RawMessage("{}")
 	}
 	switch name {
 	case "mockit_submit":
-		return s.toolSubmit(rawArgs)
+		return s.toolSubmit(ctx, rawArgs)
 	case "mockit_get_review":
-		return s.toolGetReview(rawArgs)
+		return s.toolGetReview(ctx, rawArgs)
 	case "mockit_list":
-		return s.toolList(rawArgs)
+		return s.toolList(ctx, rawArgs)
 	default:
 		return fmt.Sprintf("未知工具 %q(可用:mockit_submit / mockit_get_review / mockit_list)", name), true
 	}
@@ -172,8 +174,8 @@ func publicBaseURL(lk *lifecycle.Lock) (string, error) {
 
 // ---- HTTP 薄封装 ----
 
-func (s *server) apiPost(base, path string, body []byte) (int, []byte, error) {
-	req, err := http.NewRequest(http.MethodPost, base+path, bytes.NewReader(body))
+func (s *server) apiPost(ctx context.Context, base, path string, body []byte) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -190,8 +192,12 @@ func (s *server) apiPost(base, path string, body []byte) (int, []byte, error) {
 	return resp.StatusCode, b, nil
 }
 
-func (s *server) apiGet(base, path string) (int, []byte, error) {
-	resp, err := s.httpc.Get(base + path)
+func (s *server) apiGet(ctx context.Context, base, path string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	resp, err := s.httpc.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -261,7 +267,7 @@ type submitResponse struct {
 	Variants []variantBrief `json:"variants"`
 }
 
-func (s *server) toolSubmit(raw json.RawMessage) (string, bool) {
+func (s *server) toolSubmit(ctx context.Context, raw json.RawMessage) (string, bool) {
 	var a submitArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "参数解析失败: " + err.Error(), true
@@ -298,7 +304,7 @@ func (s *server) toolSubmit(raw json.RawMessage) (string, bool) {
 	if err != nil {
 		return "请求序列化失败: " + err.Error(), true
 	}
-	status, respBody, err := s.apiPost(apiBase(lk), "/api/submissions", body)
+	status, respBody, err := s.apiPost(ctx, apiBase(lk), "/api/submissions", body)
 	if err != nil {
 		return fmt.Sprintf("提交失败(请求 serve): %v", errText(err)), true
 	}
@@ -387,7 +393,7 @@ type listArgs struct {
 	Limit  int    `json:"limit"`
 }
 
-func (s *server) toolGetReview(raw json.RawMessage) (string, bool) {
+func (s *server) toolGetReview(ctx context.Context, raw json.RawMessage) (string, bool) {
 	var a idArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "参数解析失败: " + err.Error(), true
@@ -399,7 +405,7 @@ func (s *server) toolGetReview(raw json.RawMessage) (string, bool) {
 	if err != nil {
 		return err.Error(), true
 	}
-	status, body, err := s.apiGet(apiBase(lk), "/api/submissions/"+url.PathEscape(a.ID))
+	status, body, err := s.apiGet(ctx, apiBase(lk), "/api/submissions/"+url.PathEscape(a.ID))
 	if err != nil {
 		return fmt.Sprintf("查询失败(请求 serve): %v", errText(err)), true
 	}
@@ -436,7 +442,7 @@ func (s *server) toolGetReview(raw json.RawMessage) (string, bool) {
 	return b.String(), false
 }
 
-func (s *server) toolList(raw json.RawMessage) (string, bool) {
+func (s *server) toolList(ctx context.Context, raw json.RawMessage) (string, bool) {
 	var a listArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "参数解析失败: " + err.Error(), true
@@ -456,7 +462,7 @@ func (s *server) toolList(raw json.RawMessage) (string, bool) {
 	if enc := q.Encode(); enc != "" {
 		path += "?" + enc
 	}
-	status, body, err := s.apiGet(apiBase(lk), path)
+	status, body, err := s.apiGet(ctx, apiBase(lk), path)
 	if err != nil {
 		return fmt.Sprintf("查询失败(请求 serve): %v", errText(err)), true
 	}
