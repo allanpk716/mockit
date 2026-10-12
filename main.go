@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -17,6 +18,7 @@ import (
 	"mockit/internal/lifecycle"
 	"mockit/internal/mcp"
 	"mockit/internal/server"
+	"mockit/internal/upgrade"
 )
 
 // Version 是二进制版本;MCP 握手据此判断是否停旧起新。
@@ -44,6 +46,8 @@ func main() {
 		os.Exit(mcp.Run(cfg))
 	case "version":
 		fmt.Println(Version)
+	case "upgrade":
+		os.Exit(runUpgrade(os.Args[2:]))
 	default:
 		usage()
 		os.Exit(2)
@@ -51,7 +55,37 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, "用法: mockit serve | mockit mcp | mockit version\n")
+	fmt.Fprint(os.Stderr, "用法: mockit serve | mockit mcp | mockit version | mockit upgrade [--check]\n")
+}
+
+// runUpgrade 是 `mockit upgrade` 的薄转发:本版仅支持 --check(查询最新版本,
+//强制刷新缓存);完整升级由后续票实现。
+func runUpgrade(args []string) int {
+	check := false
+	for _, a := range args {
+		if a == "--check" {
+			check = true
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "未知参数: %s\n", a)
+		usage()
+		return 2
+	}
+	if !check {
+		fmt.Fprintln(os.Stderr, "mockit upgrade 尚未实现(本版仅支持 --check)")
+		return 1
+	}
+	cfg, err := config.Load(nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config:", err)
+		return 1
+	}
+	res := upgrade.NewChecker(cfg.DataDir, Version).Check(context.Background(), true)
+	fmt.Println(res)
+	if res.State == upgrade.StateFailed {
+		return 1
+	}
+	return 0
 }
 
 // 确保 lifecycle 包进入编译(锁文件读写助手,serve/mcp 共用)。
