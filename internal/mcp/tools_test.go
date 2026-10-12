@@ -4,6 +4,7 @@ package mcp
 // 参数校验、lock 缺失/ping 不通两路错误文案(F1:任何工具输出不得含 URL)。
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -45,7 +46,7 @@ func TestSubmitInlineHTMLPostsB64(t *testing.T) {
 	s, _, _ := newTestSrv(t, backend.URL)
 	port := backend.Listener.Addr().(*net.TCPAddr).Port
 	html := "<h1>你好</h1>"
-	text, isErr := s.callTool("mockit_submit", mustJSON(t, map[string]any{
+	text, isErr := s.callTool(context.Background(), "mockit_submit", mustJSON(t, map[string]any{
 		"title": "登录页",
 		"note":  "备注文案",
 		"variants": []map[string]any{
@@ -112,7 +113,7 @@ func TestSubmitPathVariantsKindMapping(t *testing.T) {
 
 	s, _, _ := newTestSrv(t, backend.URL)
 	port := backend.Listener.Addr().(*net.TCPAddr).Port
-	text, isErr := s.callTool("mockit_submit", mustJSON(t, map[string]any{
+	text, isErr := s.callTool(context.Background(), "mockit_submit", mustJSON(t, map[string]any{
 		"title": "多候选",
 		"variants": []map[string]any{
 			{"label": "A", "path": htmlPath},
@@ -157,7 +158,7 @@ func TestSubmitPathVariantsKindMapping(t *testing.T) {
 func TestSubmitOversizeRejected(t *testing.T) {
 	s, _, _ := newTestSrv(t, "") // 不应触达网络与 lock
 	big := strings.Repeat("a", maxFileBytes+1)
-	text, isErr := s.callTool("mockit_submit", mustJSON(t, map[string]any{
+	text, isErr := s.callTool(context.Background(), "mockit_submit", mustJSON(t, map[string]any{
 		"title":    "超大内联",
 		"variants": []map[string]any{{"label": "A", "html": big}},
 	}))
@@ -170,7 +171,7 @@ func TestSubmitOversizeRejected(t *testing.T) {
 	if err := os.WriteFile(bigPath, []byte(big), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	text, isErr = s.callTool("mockit_submit", mustJSON(t, map[string]any{
+	text, isErr = s.callTool(context.Background(), "mockit_submit", mustJSON(t, map[string]any{
 		"title":    "超大文件",
 		"variants": []map[string]any{{"label": "A", "path": bigPath}},
 	}))
@@ -198,7 +199,7 @@ func TestSubmitParamValidation(t *testing.T) {
 		{"坏扩展名", map[string]any{"title": "t", "variants": []map[string]any{{"label": "A", "path": txtPath}}}, "不支持的文件类型"},
 	}
 	for _, c := range cases {
-		text, isErr := s.callTool("mockit_submit", mustJSON(t, c.args))
+		text, isErr := s.callTool(context.Background(), "mockit_submit", mustJSON(t, c.args))
 		if !isErr {
 			t.Fatalf("%s: 应报错, 得成功文本: %s", c.name, text)
 		}
@@ -226,7 +227,7 @@ func TestGetReviewAndListAgainstFakeServe(t *testing.T) {
 
 	s, _, _ := newTestSrv(t, backend.URL)
 
-	text, isErr := s.callTool("mockit_get_review", mustJSON(t, map[string]any{"id": "ab12cd"}))
+	text, isErr := s.callTool(context.Background(), "mockit_get_review", mustJSON(t, map[string]any{"id": "ab12cd"}))
 	if isErr {
 		t.Fatalf("get_review 不应失败: %s", text)
 	}
@@ -239,7 +240,7 @@ func TestGetReviewAndListAgainstFakeServe(t *testing.T) {
 		t.Fatalf("get_review 文本含 URL,违反 F6:\n%s", text)
 	}
 
-	text, isErr = s.callTool("mockit_list", mustJSON(t, map[string]any{"status": "pending", "limit": 5}))
+	text, isErr = s.callTool(context.Background(), "mockit_list", mustJSON(t, map[string]any{"status": "pending", "limit": 5}))
 	if isErr {
 		t.Fatalf("list 不应失败: %s", text)
 	}
@@ -265,7 +266,7 @@ func TestListEmptyAndNoFilters(t *testing.T) {
 	defer backend.Close()
 
 	s, _, _ := newTestSrv(t, backend.URL)
-	text, isErr := s.callTool("mockit_list", json.RawMessage("{}"))
+	text, isErr := s.callTool(context.Background(), "mockit_list", json.RawMessage("{}"))
 	if isErr {
 		t.Fatalf("list 不应失败: %s", text)
 	}
@@ -279,7 +280,7 @@ func TestListEmptyAndNoFilters(t *testing.T) {
 
 func TestUnknownTool(t *testing.T) {
 	s, _, _ := newTestSrv(t, "")
-	text, isErr := s.callTool("mockit_nope", json.RawMessage("{}"))
+	text, isErr := s.callTool(context.Background(), "mockit_nope", json.RawMessage("{}"))
 	if !isErr || !strings.Contains(text, "未知工具") {
 		t.Fatalf("未知工具应报错: isErr=%v text=%s", isErr, text)
 	}
@@ -291,7 +292,7 @@ func TestEnsureFailureSurfacesAsToolError(t *testing.T) {
 	s.ensure = func() (*lifecycle.Lock, error) {
 		return nil, errors.New("拉起 serve 失败: 启动 serve 进程失败: 权限不足")
 	}
-	text, isErr := s.callTool("mockit_list", json.RawMessage("{}"))
+	text, isErr := s.callTool(context.Background(), "mockit_list", json.RawMessage("{}"))
 	if !isErr {
 		t.Fatalf("拉起失败应报错: %s", text)
 	}
@@ -309,7 +310,7 @@ func TestF9SurfacesAsToolError(t *testing.T) {
 	s.ensure = func() (*lifecycle.Lock, error) {
 		return nil, errors.New(f9Hint)
 	}
-	text, isErr := s.callTool("mockit_list", json.RawMessage("{}"))
+	text, isErr := s.callTool(context.Background(), "mockit_list", json.RawMessage("{}"))
 	if !isErr {
 		t.Fatalf("F9 应报错: %s", text)
 	}
@@ -348,7 +349,7 @@ func TestRequestFailureTextHasNoURL(t *testing.T) {
 		{"list", "mockit_list", json.RawMessage("{}"), "查询失败"},
 	}
 	for _, c := range cases {
-		text, isErr := s.callTool(c.tool, c.args)
+		text, isErr := s.callTool(context.Background(), c.tool, c.args)
 		if !isErr {
 			t.Fatalf("%s: serve 拒连应报错, 得成功文本: %s", c.name, text)
 		}
@@ -373,7 +374,7 @@ func TestResolveViaEnsureHappyPath(t *testing.T) {
 	s.ensure = func() (*lifecycle.Lock, error) {
 		return &lifecycle.Lock{Port: port, PID: os.Getpid(), Version: Version, Token: "t"}, nil
 	}
-	text, isErr := s.callTool("mockit_list", json.RawMessage("{}"))
+	text, isErr := s.callTool(context.Background(), "mockit_list", json.RawMessage("{}"))
 	if isErr {
 		t.Fatalf("ensure 定位成功不应失败: %s", text)
 	}
@@ -394,7 +395,7 @@ func TestSubmitIPv6BaseHostBracketed(t *testing.T) {
 	s.ensure = func() (*lifecycle.Lock, error) {
 		return &lifecycle.Lock{Port: port, BaseHost: "fd00::1"}, nil
 	}
-	text, isErr := s.callTool("mockit_submit", mustJSON(t, map[string]any{
+	text, isErr := s.callTool(context.Background(), "mockit_submit", mustJSON(t, map[string]any{
 		"title":    "t",
 		"variants": []map[string]any{{"label": "A", "html": "<b/>"}},
 	}))
@@ -424,7 +425,7 @@ func TestSubmitBaseHostUndeterminableErrors(t *testing.T) {
 	s.ensure = func() (*lifecycle.Lock, error) {
 		return &lifecycle.Lock{Port: port, BaseHost: ""}, nil
 	}
-	text, isErr := s.callTool("mockit_submit", mustJSON(t, map[string]any{
+	text, isErr := s.callTool(context.Background(), "mockit_submit", mustJSON(t, map[string]any{
 		"title":    "t",
 		"variants": []map[string]any{{"label": "A", "html": "<b/>"}},
 	}))
@@ -463,7 +464,7 @@ func TestSubmitURLPortFollowsLock(t *testing.T) {
 		return &lifecycle.Lock{Port: cur, BaseHost: "phone.test"}, nil
 	}
 
-	text, isErr := s.callTool("mockit_submit", mustJSON(t, map[string]any{
+	text, isErr := s.callTool(context.Background(), "mockit_submit", mustJSON(t, map[string]any{
 		"title": "漂移前", "variants": []map[string]any{{"label": "A", "html": "<b/>"}},
 	}))
 	if isErr || !strings.Contains(text, fmt.Sprintf("http://phone.test:%d/s/aa11aa", p1)) {
@@ -471,7 +472,7 @@ func TestSubmitURLPortFollowsLock(t *testing.T) {
 	}
 
 	cur = p2 // 模拟漂移:实例锁换端口,ensure 复查读到新 lock
-	text, isErr = s.callTool("mockit_submit", mustJSON(t, map[string]any{
+	text, isErr = s.callTool(context.Background(), "mockit_submit", mustJSON(t, map[string]any{
 		"title": "漂移后", "variants": []map[string]any{{"label": "A", "html": "<b/>"}},
 	}))
 	if isErr || !strings.Contains(text, fmt.Sprintf("http://phone.test:%d/s/bb22bb", p2)) {
