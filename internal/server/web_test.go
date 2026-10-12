@@ -178,6 +178,19 @@ func TestWebVariantReviewPanel(t *testing.T) {
 	mustContain(t, body, "壳页已审摘要",
 		"truncate(sub.comment, SUMMARY_LEN)",
 	)
+
+	// 手机验收反馈:只有两个按钮时用户看不出能写批注。底栏常驻一行批注
+	// 输入条(点开即面板的「写批注」模式,面板内直接 选它/打回),有草稿时
+	// 显示草稿首行;已审态隐藏输入条。
+	mustContain(t, body, "壳页常驻批注输入条",
+		`id="note-entry"`,
+		"写批注…(打回必填)",
+		"openPanel('')",
+		`id="panel-choose"`,
+		`id="panel-reject"`,
+		"$('note-entry').hidden = true",
+		"syncEntry()",
+	)
 }
 
 // ---- 票 07 · 批注草稿按提交保存 ----
