@@ -170,6 +170,42 @@ func TestWebVariantReviewPanel(t *testing.T) {
 	)
 }
 
+// ---- 票 07 · 批注草稿按提交保存 ----
+// 写到一半的批注按提交 id 存手机浏览器本地存储,同一提交所有候选页共用一份
+// (切候选/刷新/误关后回来都在);输入实时保存,页面加载恢复,裁决成功后
+// 清除、失败保留;私有模式等 localStorage 访问可能抛错,读写一律 try/catch 兜底。
+func TestWebVariantCommentDraft(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	id := mustSubmit(t, ts,
+		htmlVariant("方案A", "<p>a</p>"),
+		htmlVariant("方案B", "<p>b</p>"),
+	)
+	body := webBody(t, ts, "/s/"+id+"/v1")
+
+	// 存储键按提交 id 区分:不同提交的草稿互不串
+	mustContain(t, body, "壳页草稿",
+		"var DRAFT_PREFIX = 'mockit.draft.'",
+		"DRAFT_PREFIX + id",
+		"localStorage.getItem(draftKey)",
+		"localStorage.setItem(draftKey, v)",
+		"localStorage.removeItem(draftKey)",
+	)
+
+	// localStorage 访问 try/catch 兜底(私有模式可能抛错,退化不阻拦裁决)
+	mustContain(t, body, "壳页草稿兜底",
+		"try{ return localStorage.getItem(draftKey) || ''; }catch(e){ return ''; }",
+		"try{ localStorage.setItem(draftKey, v); }catch(e){}",
+		"try{ localStorage.removeItem(draftKey); }catch(e){}",
+	)
+
+	// 动线:输入实时保存;页面加载恢复(面板打开即见草稿);裁决成功才清除
+	mustContain(t, body, "壳页草稿动线",
+		"saveDraft($('comment').value)",
+		"$('comment').value = loadDraft();",
+		"if(res.ok){ clearDraft();",
+	)
+}
+
 // TestWebDetailCommentFullText 详情页批注全文:候选页底栏只给摘要,
 // 详情页显示全文且保留换行(white-space:pre-wrap + textContent 写入)。
 func TestWebDetailCommentFullText(t *testing.T) {

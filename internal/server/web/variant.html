@@ -206,6 +206,23 @@ function init(){
 
 /* ---- 底部批注面板 ---- */
 
+/* ---- 批注草稿(票 07):按提交 id 存手机浏览器本地存储 ----
+ 同一提交所有候选页共用一份(键含 id),切候选/刷新/误关后回来都在;
+ 输入实时保存,裁决成功后清除、失败保留。私有模式/被禁时 localStorage
+ 访问可能抛错,读写一律 try/catch 兜底:存不上只是退化为本次会话内保留,
+ 不阻拦裁决动线。 */
+var DRAFT_PREFIX = 'mockit.draft.';
+var draftKey = DRAFT_PREFIX + id;
+function loadDraft(){
+  try{ return localStorage.getItem(draftKey) || ''; }catch(e){ return ''; }
+}
+function saveDraft(v){
+  try{ localStorage.setItem(draftKey, v); }catch(e){}
+}
+function clearDraft(){
+  try{ localStorage.removeItem(draftKey); }catch(e){}
+}
+
 function updateCount(){
   var left = MAX_COMMENT - charCount($('comment').value);
   var c = $('count');
@@ -225,8 +242,8 @@ function openPanel(decision){
   $('panel-ok').textContent = isReject ? '确认打回' : '确认' + primary;
   hideErr();
   updateCount();
-  /* 取消/关闭不清空批注框:写到一半回到候选再打开仍在
-     (票 07 将在此接入按提交 id 的草稿持久化) */
+  /* 取消/关闭不清空批注框;草稿在页面加载时已按提交 id 从本地存储恢复
+     (见下方 loadDraft),写到一半回到候选再打开仍在 */
   $('panel-backdrop').hidden = false;
   $('panel').hidden = false;
   $('comment').focus();
@@ -260,7 +277,7 @@ function confirmPanel(){
   }).then(function(r){
     return r.json().then(function(j){ return { ok: r.ok, j: j }; });
   }).then(function(res){
-    if(res.ok){ location.href = '/s/' + id; return; } /* 成功 → 回详情页 */
+    if(res.ok){ clearDraft(); location.href = '/s/' + id; return; } /* 成功 → 清草稿,回详情页;失败不清,批注不丢 */
     setBusy(false);
     showErr('提交失败: ' + ((res.j && res.j.error) ? res.j.error : '未知错误')); /* 如已审(409)面板内就地显示,批注不丢 */
   }).catch(function(err){
@@ -274,7 +291,14 @@ $('btn-reject').addEventListener('click', function(){ openPanel('reject'); });
 $('panel-ok').addEventListener('click', confirmPanel);
 $('panel-cancel').addEventListener('click', closePanel);
 $('panel-backdrop').addEventListener('click', closePanel);
-$('comment').addEventListener('input', updateCount);
+$('comment').addEventListener('input', function(){
+  updateCount();
+  saveDraft($('comment').value); /* 实时存草稿:切候选/刷新/误关浏览器都不丢 */
+});
+
+/* 页面加载即恢复该提交的草稿:面板打开时批注框里已是写到一半的内容 */
+$('comment').value = loadDraft();
+updateCount();
 
 window.addEventListener('resize', fitBar);
 window.addEventListener('load', fitBar);
