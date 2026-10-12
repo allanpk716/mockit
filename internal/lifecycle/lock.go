@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -27,6 +28,45 @@ const lockByteOffset = 1 << 30
 
 // ErrLockExists 表示 server.lock 已被他人创建(O_EXCL 失败),输家应复查后退出。
 var ErrLockExists = errors.New("lifecycle: server.lock 已被他人创建")
+
+// ErrLocked 表示非阻塞锁尝试发现锁已被他人持有(升级互斥等)。
+var ErrLocked = errors.New("lifecycle: 锁被他持")
+
+// FileGuard 是 TryExclusiveLock 返回的非阻塞排他锁句柄:关句柄即释放
+// (OS 锁随句柄消失;锁文件常驻——同 start.lock 纪律,删除反而制造
+// open/unlink 竞态)。
+type FileGuard struct{ f *os.File }
+
+// TryExclusiveLock 对 path 做一次非阻塞 OS 级排他锁尝试(文件不存在则创建,
+// 仅作锁载体,内容无意义):拿到 → 句柄;锁被他持 → ErrLocked;其他失败 →
+// 错误。升级互斥(规格 #11,票 #15)复用与 start.lock 相同的底层原语。
+func TryExclusiveLock(path string) (*FileGuard, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("lifecycle: 创建锁目录失败: %s: %w", filepath.Dir(path), err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle: 打开锁文件失败: %s: %w", path, err)
+	}
+	held, err := tryLockFileNB(f)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("lifecycle: 锁 %s 失败: %w", path, err)
+	}
+	if held {
+		f.Close()
+		return nil, fmt.Errorf("lifecycle: %s: %w", path, ErrLocked)
+	}
+	return &FileGuard{f: f}, nil
+}
+
+// Release 释放非阻塞排他锁(关句柄;锁文件保留)。
+func (g *FileGuard) Release() {
+	if g != nil && g.f != nil {
+		g.f.Close()
+		g.f = nil
+	}
+}
 
 // StartLockPath 返回启动互斥锁(start.lock)文件路径。
 func StartLockPath(dataDir string) string { return dataDir + "/start.lock" }

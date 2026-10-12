@@ -80,50 +80,96 @@ func usage() {
 }
 
 func usageText() string {
-	return "用法: mockit serve | mockit mcp | mockit version | mockit install-skill | mockit upgrade [--check]\n"
+	return "用法: mockit serve | mockit mcp | mockit version | mockit install-skill | mockit upgrade [--version vX.Y.Z] [--check]\n"
 }
 
-// runUpgrade 是 `mockit upgrade` 的薄转发:本版仅支持 --check(查询最新版本,
-// 强制刷新缓存);完整升级由后续票实现。
+// runUpgrade 是 `mockit upgrade` 的薄转发:--check 只查最新版本(强制刷新);
+// 默认(或带 --version vX.Y.Z,含降级)执行完整升级,依赖取生产默认值,
+// 升级逻辑与测试都在 internal/upgrade。
 func runUpgrade(args []string) int {
 	check := false
-	for _, a := range args {
-		if a == "--check" {
+	version := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--check":
 			check = true
-			continue
+		case "--version":
+			i++
+			if i >= len(args) || args[i] == "" {
+				fmt.Fprintln(os.Stderr, "--version 需要版本号,如 --version v0.3.0")
+				return 2
+			}
+			version = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "未知参数: %s\n", args[i])
+			usage()
+			return 2
 		}
-		fmt.Fprintf(os.Stderr, "未知参数: %s\n", a)
-		usage()
-		return 2
-	}
-	if !check {
-		fmt.Fprintln(os.Stderr, "mockit upgrade 尚未实现(本版仅支持 --check)")
-		return 1
 	}
 	cfg, err := config.Load(nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config:", err)
 		return 1
 	}
-	res := upgrade.NewChecker(cfg.DataDir, Version).Check(context.Background(), true)
-	fmt.Println(res)
-	if res.State == upgrade.StateFailed {
+	if check { // 只查不装(--check 与 --version 同时给时以 --check 为准)
+		res := upgrade.NewChecker(cfg.DataDir, Version).Check(context.Background(), true)
+		fmt.Println(res)
+		if res.State == upgrade.StateFailed {
+			return 1
+		}
+		return 0
+	}
+	exe, err := currentExePath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "upgrade:", err)
 		return 1
 	}
+	skillsRoot, err := upgrade.DefaultSkillsRoot()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "upgrade:", err)
+		return 1
+	}
+	claudeCfg, err := upgrade.DefaultClaudeConfigPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "upgrade:", err)
+		return 1
+	}
+	u := upgrade.NewUpgrader()
+	u.ExePath = exe
+	u.SkillsRoot = skillsRoot
+	u.DataDir = cfg.DataDir
+	u.ClaudeConfigPath = claudeCfg
+	u.Current = Version
+	rep, err := u.Upgrade(context.Background(), version)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "upgrade:", err)
+		return 1
+	}
+	fmt.Println(rep)
 	return 0
 }
 
 // removeOldBinary 尽力清理同目录下升级残留的 <可执行名>.old(票 #12):
 // 任何子命令启动时调用,删不掉静默跳过。
 func removeOldBinary() {
-	exe, err := os.Executable()
+	exe, err := currentExePath()
 	if err != nil {
 		return
 	}
-	if real, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = real // 与升级替换目标一致:解析软链之后的真实路径
-	}
 	upgrade.RemoveOldBinary(exe)
+}
+
+// currentExePath 返回当前运行文件解析软链之后的真实路径——与升级替换
+// 目标一致。
+func currentExePath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("无法确定当前可执行文件: %w", err)
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	return exe, nil
 }
 
 // 确保 lifecycle 包进入编译(锁文件读写助手,serve/mcp 共用)。

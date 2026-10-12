@@ -75,11 +75,15 @@ type Checker struct {
 // NewChecker 用生产默认值构造:GitHub 基地址(可被隐藏环境变量
 // MOCKIT_RELEASE_BASE 覆盖),缓存放 dataDir。
 func NewChecker(dataDir, current string) *Checker {
-	base := DefaultBaseURL
+	return &Checker{BaseURL: defaultBaseURL(), DataDir: dataDir, Current: current}
+}
+
+// defaultBaseURL 返回生效的 release 基地址:隐藏环境变量优先,仅用于验收和调试。
+func defaultBaseURL() string {
 	if v := os.Getenv(baseURLEnv); v != "" {
-		base = v
+		return v
 	}
-	return &Checker{BaseURL: base, DataDir: dataDir, Current: current}
+	return DefaultBaseURL
 }
 
 // cacheFile 是缓存文件路径。

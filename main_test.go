@@ -27,3 +27,9 @@ func TestUsageMentionsInstallSkill(t *testing.T) {
 		t.Fatalf("usage 文案应包含 install-skill: %q", usageText())
 	}
 }
+
+func TestUsageMentionsUpgradeVersionFlag(t *testing.T) {
+	if !strings.Contains(usageText(), "upgrade [--version vX.Y.Z] [--check]") {
+		t.Fatalf("usage 文案应包含 upgrade 与其参数: %q", usageText())
+	}
+}
