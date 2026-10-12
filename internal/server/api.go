@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
@@ -31,13 +32,16 @@ var idRe = regexp.MustCompile(`^[0-9a-z]{6}$`)
 
 // Server 聚合 HTTP 面的全部依赖;路由在 newServer 注册。
 type Server struct {
-	dataDir  string
-	store    *store.Store
-	token    string // shutdown 校验用,与 lock.token 同源
-	lg       *log.Logger
-	stop     chan struct{} // shutdown 命中后关闭,Serve 据此优雅退出
+	dataDir string
+	store   *store.Store
+	token   string // shutdown 校验用,与 lock.token 同源
+	lg      *log.Logger
+	stop    chan struct{} // shutdown 命中后关闭,Serve 据此优雅退出
 	stopOnce sync.Once
-	mux      *http.ServeMux
+	// waiters 登记详情 API 长轮询等待者(票 09):裁决成功路径在进程内
+	// 唤醒,不轮询数据库。
+	waiters *reviewWaiters
+	mux     *http.ServeMux
 }
 
 // newServer 构造 HTTP 面(不含端口绑定/lock/信号,那些属 Serve)。
@@ -52,6 +56,7 @@ func newServer(dataDir string, st *store.Store, token string, lg *log.Logger) *S
 		token:   token,
 		lg:      lg,
 		stop:    make(chan struct{}),
+		waiters: newReviewWaiters(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleListPage)
@@ -234,10 +239,26 @@ func (s *Server) handleDetailAPI(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, store.ErrNotFound.Error())
 		return
 	}
+	// 票 09:可选 wait(秒,0~600)长轮询;非法值 400。
+	wait, ok := parseWaitSeconds(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "wait 无效:须为 0~600 的整数秒")
+		return
+	}
 	sub, err := s.store.Get(id)
 	if err != nil {
 		writeErr(w, storeStatus(err), err.Error())
 		return
+	}
+	if wait > 0 && sub.Status == store.StatusPending {
+		sub, err = s.awaitReview(r.Context(), id, wait)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return // 客户端已断开,不再写响应
+			}
+			writeErr(w, storeStatus(err), err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, subToJSON(sub, s.noteOf(sub)))
 }
@@ -291,6 +312,9 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, storeStatus(err), err.Error())
 		return
 	}
+	// 裁决落库成功:进程内唤醒等待该提交的长轮询(票 09);此刻起等待方
+	// 复查状态必见已审,不会拿到旧值。
+	s.waiters.wake(req.ID)
 	sub, err := s.store.Get(req.ID)
 	if err != nil {
 		writeErr(w, storeStatus(err), err.Error())

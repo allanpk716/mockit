@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"mockit/internal/lifecycle"
 )
@@ -97,11 +98,17 @@ func toolDefs() []toolDef {
 		},
 		{
 			Name:        "mockit_get_review",
-			Description: "按提交 id 取回审核结果:状态/裁决/选中候选/批注。",
+			Description: "按提交 id 取回审核结果:状态/裁决/选中候选/批注。可选 wait(整数秒,0~600):已审或未传 wait 时立即返回;待审时挂起等待,用户一裁决即返回裁决与批注;等到超时返回的仍是待审状态,属正常结果,可再调一次继续等待。",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"id": map[string]any{"type": "string", "description": "提交 id"},
+					"wait": map[string]any{
+						"type":        "integer",
+						"minimum":     0,
+						"maximum":     600,
+						"description": "等待裁决的秒数(0~600,可选):待审时挂起至裁决或超时;超时返回待审属正常,可再调",
+					},
 				},
 				"required": []string{"id"},
 			},
@@ -193,11 +200,22 @@ func (s *server) apiPost(ctx context.Context, base, path string, body []byte) (i
 }
 
 func (s *server) apiGet(ctx context.Context, base, path string) (int, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	return httpGet(s.httpc, ctx, base+path)
+}
+
+// apiGetLong 同 apiGet 但走无固定超时的长轮询客户端(带 wait 的调用用),
+// 超时由调用方注入的 ctx deadline 控制(票 09)。
+func (s *server) apiGetLong(ctx context.Context, base, path string) (int, []byte, error) {
+	return httpGet(waitHTTPClient, ctx, base+path)
+}
+
+// httpGet 用给定客户端发 GET;ctx 随请求下发,取消即中断。
+func httpGet(client *http.Client, ctx context.Context, url string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, nil, err
 	}
-	resp, err := s.httpc.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -367,9 +385,23 @@ func variantContent(v variantArg) ([]byte, string, error) {
 
 // ---- mockit_get_review / mockit_list ----
 
-type idArgs struct {
-	ID string `json:"id"`
+// getReviewArgs 票 09:wait 可选(0~600 秒),指针区分未携带与 0。
+type getReviewArgs struct {
+	ID   string `json:"id"`
+	Wait *int   `json:"wait"`
 }
+
+// maxWaitSeconds get_review 等待上限(秒),与 serve 详情 API 同口径。
+const maxWaitSeconds = 600
+
+// waitHTTPMargin 带 wait 的调用在 wait 之上追加的 HTTP 超时余量:serve 至多
+// 挂 wait 秒即返回,余量覆盖调度与传输开销。
+const waitHTTPMargin = 10 * time.Second
+
+// waitHTTPClient 供带 wait 的长轮询 get_review:无固定 Timeout——超时由
+// 每次调用的 ctx deadline(wait + 余量)决定,不受共享 httpc 固定超时
+// (生产 60 秒)卡死;复用 DefaultTransport 连接池。
+var waitHTTPClient = &http.Client{}
 
 type variantBrief struct {
 	Seq   int    `json:"seq"`
@@ -394,18 +426,32 @@ type listArgs struct {
 }
 
 func (s *server) toolGetReview(ctx context.Context, raw json.RawMessage) (string, bool) {
-	var a idArgs
+	var a getReviewArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "参数解析失败: " + err.Error(), true
 	}
 	if strings.TrimSpace(a.ID) == "" {
 		return "id 不能为空", true
 	}
+	path := "/api/submissions/" + url.PathEscape(a.ID)
+	get := s.apiGet
+	if a.Wait != nil {
+		if *a.Wait < 0 || *a.Wait > maxWaitSeconds {
+			return fmt.Sprintf("wait 无效:须为 0~600 的整数秒,得 %d", *a.Wait), true
+		}
+		path += "?wait=" + strconv.Itoa(*a.Wait)
+		// HTTP 超时按本次 wait 放宽(wait + 余量),不被共享 httpc 的
+		// 固定超时(生产 60 秒)卡死;ctx 仍随调用下发,取消即中断。
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(*a.Wait)*time.Second+waitHTTPMargin)
+		defer cancel()
+		get = s.apiGetLong
+	}
 	lk, err := s.resolveLock()
 	if err != nil {
 		return err.Error(), true
 	}
-	status, body, err := s.apiGet(ctx, apiBase(lk), "/api/submissions/"+url.PathEscape(a.ID))
+	status, body, err := get(ctx, apiBase(lk), path)
 	if err != nil {
 		return fmt.Sprintf("查询失败(请求 serve): %v", errText(err)), true
 	}

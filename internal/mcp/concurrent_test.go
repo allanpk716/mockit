@@ -315,3 +315,69 @@ func TestConcurrentToolCallWritesDoNotInterleave(t *testing.T) {
 		}
 	}
 }
+
+// 验收(票 09):带 wait 的长等待 get_review 被 notifications/cancelled
+// 中断——serve 侧观察到 HTTP 请求断开,被取消的请求不回复,后续调用正常;
+// wait 确实作为查询参数透传到了详情 API。
+func TestCancelledWaitingGetReviewInterrupted(t *testing.T) {
+	var gotQuery string
+	entered := make(chan struct{}, 1)
+	interrupted := make(chan struct{}, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/submissions/wait00":
+			gotQuery = r.URL.RawQuery
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			// 挂住直到客户端断开:服务端请求 context 结束即"HTTP 请求被中断"的观察点。
+			<-r.Context().Done()
+			select {
+			case interrupted <- struct{}{}:
+			default:
+			}
+		case r.URL.Path == "/api/submissions/ok11ok":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"ok11ok","title":"正常提交","status":"reviewed","decision":"approve","chosen_variant":0,"comment":"可以","variants":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backend.Close()
+
+	p := startSession(t, backend.URL)
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mockit_get_review","arguments":{"id":"wait00","wait":600}}}`)
+	waitSig(t, entered, 5*time.Second, "假 serve 收到带 wait 的工具调用 HTTP 请求")
+	if gotQuery != "wait=600" {
+		t.Fatalf("带 wait 的调用应透传查询串 wait=600,得 %q", gotQuery)
+	}
+
+	// 取消 id=1:等待中的 HTTP 请求应被中断(假 serve 侧观察到断开)。
+	p.send(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1,"reason":"用户打断"}}`)
+	waitSig(t, interrupted, 5*time.Second, "取消中断等待中的 HTTP 请求")
+
+	p.send(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mockit_get_review","arguments":{"id":"ok11ok"}}}`)
+	env := p.recv(5*time.Second, "取消后的新工具调用响应")
+	if strings.TrimSpace(string(env.ID)) != "3" || env.Error != nil {
+		t.Fatalf("新工具调用响应不符: id=%s err=%+v", env.ID, env.Error)
+	}
+	if text := toolText(t, env); !strings.Contains(text, "已审") || !strings.Contains(text, "可以") {
+		t.Fatalf("新工具调用文本不符:\n%s", text)
+	}
+
+	// loop 退出意味着所有在飞调用已收尾;此时全部响应里不得有 id=1 的任何回复。
+	if code := p.close(); code != 0 {
+		t.Fatalf("loop 退出码 = %d, want 0", code)
+	}
+	got := map[string]int{}
+	for _, env := range p.all {
+		got[idKey(env.ID)]++
+	}
+	if got["1"] != 0 {
+		t.Fatalf("已取消的等待请求(id=1)不应收到任何回复, 实收 %d 条", got["1"])
+	}
+	if len(p.all) != 1 || got["3"] != 1 {
+		t.Fatalf("应有且仅有 id=3 一条响应, 实得 %v", got)
+	}
+}
