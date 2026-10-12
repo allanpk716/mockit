@@ -291,10 +291,10 @@ function confirmPanel(){
   }).then(function(res){
     if(res.ok){ clearDraft(); location.href = '/s/' + id; return; } /* 成功 → 清草稿,回详情页;失败不清,批注不丢 */
     setBusy(false);
-    showErr('提交失败: ' + ((res.j && res.j.error) ? res.j.error : '未知错误')); /* 如已审(409)面板内就地显示,批注不丢 */
+    showErr('裁决失败: ' + ((res.j && res.j.error) ? res.j.error : '未知错误')); /* 如已审(409)面板内就地显示,批注不丢 */
   }).catch(function(err){
     setBusy(false);
-    showErr('提交失败: ' + err.message);
+    showErr('裁决失败: ' + err.message);
   });
 }
 

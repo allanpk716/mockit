@@ -122,7 +122,7 @@ func TestWebVariantJSBranches(t *testing.T) {
 		"dataset.mode = multi ? 'multi' : 'single'",
 		"body.variant = n",
 		"openPanel('reject')",
-		"'提交失败: '",
+		"'裁决失败: '",
 	)
 }
 
@@ -168,7 +168,7 @@ func TestWebVariantReviewPanel(t *testing.T) {
 		"打回必须写批注",
 		"'已超 '",
 		"批注超过 2000 字上限",
-		"'提交失败: '",
+		"'裁决失败: '",
 	)
 
 	// 已审态底栏摘要:批注截断约 60 字(用常量),全文留给详情页
