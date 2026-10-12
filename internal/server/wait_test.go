@@ -240,3 +240,61 @@ func TestDetailWaitReviewedAndMissing(t *testing.T) {
 		t.Fatalf("不存在 id 应立即 404,耗时 %v", elapsed)
 	}
 }
+
+// TestDetailWaitReleasedOnShutdown 评审修复:挂起中的长轮询在 serve 收到
+// shutdown 后应立即按当前(待审)状态返回,不吃满优雅退出期限——停旧换新
+// 等场景无需干等 shutdownGrace,更不用等满 wait。
+func TestDetailWaitReleasedOnShutdown(t *testing.T) {
+	ts, s, _ := newTestServer(t)
+	id := mustSubmit(t, ts, htmlVariant("A", "a"))
+
+	// 请求 ctx 挂到测试收尾:失败路径也能立刻释放等待者,不拖慢 ts.Close
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type res struct {
+		d   detailOut
+		err error
+	}
+	resCh := make(chan res, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/submissions/"+id+"?wait=600", nil)
+		if err != nil {
+			resCh <- res{err: err}
+			return
+		}
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			resCh <- res{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		var d detailOut
+		if err := json.Unmarshal(b, &d); err != nil {
+			resCh <- res{err: err}
+			return
+		}
+		resCh <- res{d: d}
+	}()
+	eventually(t, "等待者登记", func() bool { return s.waiters.count() == 1 })
+
+	// shutdown 命中(对 token):挂起中的等待者应立即被释放,按当前待审
+	// 状态返回,而非等满 wait=600。
+	resp := postJSONHeader(t, ts, "/shutdown", map[string]any{}, "X-Mockit-Token", "test-token")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("shutdown 应 200,得 %d: %s", resp.StatusCode, drain(t, resp))
+	}
+	drain(t, resp)
+	select {
+	case r := <-resCh:
+		if r.err != nil {
+			t.Fatalf("等待方请求失败: %v", r.err)
+		}
+		if r.d.Status != store.StatusPending {
+			t.Fatalf("关停释放应按当前待审状态返回,得 %+v", r.d)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown 后 5s 内等待方未返回(应由关停立即释放,而非等满 wait=600)")
+	}
+	eventually(t, "释放后登记清零", func() bool { return s.waiters.count() == 0 })
+}

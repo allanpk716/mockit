@@ -96,7 +96,9 @@ func (w *reviewWaiters) count() int {
 
 // awaitReview 挂起等待提交被裁决:先订阅再复查状态(裁决发生在「外层
 // 取状态」与「订阅」之间也不漏);被裁决唤醒或超时即返回复查后的最新
-// 提交,客户端断开返回 ctx.Err()(调用方不再写响应)。
+// 提交,客户端断开返回 ctx.Err()(调用方不再写响应);serve 关停
+// (shutdown/退出信号)也立即返回当前状态——挂起的长轮询不吃满优雅
+// 退出期限,停旧换新无需干等 shutdownGrace。
 func (s *Server) awaitReview(ctx context.Context, id string, waitSecs int) (*store.Submission, error) {
 	ch := s.waiters.subscribe(id)
 	defer s.waiters.unsubscribe(id, ch)
@@ -111,6 +113,7 @@ func (s *Server) awaitReview(ctx context.Context, id string, waitSecs int) (*sto
 	case <-timer.C: // 超时:按票面返回当前(待审)状态
 	case <-ctx.Done(): // 客户端断开:释放等待,响应无处可写
 		return nil, ctx.Err()
+	case <-s.stop: // serve 关停:按当前状态返回,释放等待者
 	}
 	return s.store.Get(id)
 }
