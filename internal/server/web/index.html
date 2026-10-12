@@ -20,6 +20,8 @@ body{
 }
 a{color:inherit;text-decoration:none}
 button{font:inherit;cursor:pointer;touch-action:manipulation}
+/* 兜底:带 hidden 属性的元素一律不显示,优先级压过自身 display 样式 */
+[hidden]{display:none!important}
 .top{
   display:flex;align-items:baseline;gap:8px;
   padding:14px 16px 4px;

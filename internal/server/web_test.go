@@ -124,3 +124,40 @@ func TestWebVariantJSBranches(t *testing.T) {
 		"'提交失败: '",
 	)
 }
+
+// ---- 票 05 · [hidden] 兜底规则防退化 ----
+// #stage-msg 的 id 选择器 display:flex 优先级压过 UA 的 [hidden]{display:none},
+// 空遮罩曾永远盖住候选 iframe 致整页空白(原 feedback/2026-10-10-variant-page-blank-
+// overlay.md)。三个嵌入页公共样式统一兜底,防任何页面再踩“hidden 属性被自身
+// display 样式覆盖”的同类坑。
+func TestWebPagesHiddenFallback(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	id := mustSubmit(t, ts,
+		htmlVariant("方案A", "<p>a</p>"),
+		htmlVariant("方案B", "<p>b</p>"),
+	)
+
+	type page struct{ path, name, body string }
+	pages := make([]page, 0, 3)
+	for _, p := range []struct{ path, name string }{
+		{"/", "列表页 index.html"},
+		{"/s/" + id, "详情页 detail.html"},
+		{"/s/" + id + "/v1", "壳页 variant.html"},
+	} {
+		pages = append(pages, page{p.path, p.name, webBody(t, ts, p.path)})
+	}
+
+	// 每个嵌入页都有 [hidden] 兜底:一律不显示且优先级压过元素自身 display 样式
+	for _, p := range pages {
+		mustContain(t, p.body, p.name, "[hidden]{display:none!important}")
+	}
+
+	// 壳页具体病灶与显示逻辑:遮罩保留 flex 布局(隐藏只靠兜底规则,而非删掉
+	// display:flex);取消 hidden 后加载失败提示仍可见,fail 时悬浮条仍隐藏
+	variant := pages[2].body
+	mustContain(t, variant, pages[2].name,
+		"#stage-msg{",
+		"el.hidden = false",
+		"$('bar').hidden = true",
+	)
+}
