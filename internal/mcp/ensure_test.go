@@ -328,6 +328,39 @@ func TestEnsureVersionMismatchStopsOldStartsNew(t *testing.T) {
 }
 
 // 验收:停旧被拒(非 200)→ 报错,不清理活持有,不拉新。
+// ADR 0001/票 13:serve 版本(semver 可比)高于本 MCP → 直接复用,
+// 不停 serve、不 spawn。
+func TestEnsureNewerServeReused(t *testing.T) {
+	shutdownCalls := 0
+	newer := "9.9.9"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ping":
+			fmt.Fprintf(w, `{"version":%q}`, newer)
+		case "/shutdown":
+			shutdownCalls++
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	dir := t.TempDir()
+	writeLock(t, dir, &lifecycle.Lock{Port: port, PID: os.Getpid(), Version: newer, Token: "newer"})
+
+	lk, err := ensureServer(&config.Config{DataDir: dir}, spawnNever(t))
+	if err != nil {
+		t.Fatalf("serve 更新时应直接复用: %v", err)
+	}
+	if lk.Port != port || lk.Version != newer {
+		t.Fatalf("应复用新 serve 实例: %+v", lk)
+	}
+	if shutdownCalls != 0 {
+		t.Fatalf("不应停旧 serve(shutdown 调用 %d 次)", shutdownCalls)
+	}
+}
+
 func TestEnsureShutdownRejectedKeepsOld(t *testing.T) {
 	shortenEnsureTimeouts(t)
 	dir := t.TempDir()
@@ -386,6 +419,67 @@ func TestEnsureShutdownNoExitKeepsOld(t *testing.T) {
 	assertNoURL(t, "不退等待", err)
 	if _, statErr := os.Stat(lifecycle.LockPath(dir)); statErr != nil {
 		t.Fatalf("旧锁不应被清理: %v", statErr)
+	}
+}
+
+// ADR 0001/票 13:自己拉起的 serve 报告了更高版本(磁盘二进制已被升级)
+// → 视为可用,不报"版本异常"。
+func TestEnsureSpawnedNewerServeUsable(t *testing.T) {
+	shortenEnsureTimeouts(t)
+	newer := "9.9.9"
+	port := pingServer(t, newer)
+	dir := t.TempDir()
+	spawn := func() (*childProc, error) {
+		writeLock(t, dir, &lifecycle.Lock{Port: port, PID: os.Getpid(), Version: newer, Token: "upgraded"})
+		return newAliveChild().proc(), nil
+	}
+
+	lk, err := ensureServer(&config.Config{DataDir: dir}, spawn)
+	if err != nil {
+		t.Fatalf("拉起后报更高版本的 serve 应视为可用: %v", err)
+	}
+	if lk.Version != newer || lk.Port != port {
+		t.Fatalf("应复用更高版本实例: %+v", lk)
+	}
+}
+
+// ADR 0001/票 13:serve 版本(可解析 semver)低于本 MCP → 停旧起新
+// (行为与现行一致,单独覆盖这个分支)。
+func TestEnsureOlderSemverServeReplaced(t *testing.T) {
+	shortenEnsureTimeouts(t)
+	dir := t.TempDir()
+
+	var gotToken string
+	oldSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ping":
+			fmt.Fprint(w, `{"version":"0.1.9"}`)
+		case "/shutdown":
+			gotToken = r.Header.Get("X-Mockit-Token")
+			os.Remove(lifecycle.LockPath(dir))
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer oldSrv.Close()
+	writeLock(t, dir, &lifecycle.Lock{
+		Port: oldSrv.Listener.Addr().(*net.TCPAddr).Port,
+		PID:  os.Getpid(), Version: "0.1.9", Token: "old-token",
+	})
+
+	newPort := pingServer(t, Version)
+	spawn := func() (*childProc, error) {
+		writeLock(t, dir, &lifecycle.Lock{Port: newPort, PID: os.Getpid(), Version: Version, Token: "new"})
+		return newAliveChild().proc(), nil
+	}
+
+	lk, err := ensureServer(&config.Config{DataDir: dir}, spawn)
+	if err != nil {
+		t.Fatalf("旧 serve 应被替换: %v", err)
+	}
+	if lk.Port != newPort || gotToken != "old-token" {
+		t.Fatalf("应停旧起新: port=%d token=%q", lk.Port, gotToken)
 	}
 }
 

@@ -158,6 +158,13 @@ func (s *server) resolveLock() (*lifecycle.Lock, error) {
 		s.logf("定位/拉起 serve 失败: %v", err)
 		return nil, errors.New(errText(err))
 	}
+	// ADR 0001/票 13:serve 比本 MCP 新时直接复用,但在本进程的工具结果
+	// 末尾提示一次"请重启 Claude Code"(每进程一次)。
+	if sv, ok := parseSemver(lk.Version); ok {
+		if mv, ok2 := parseSemver(Version); ok2 && compareSemver(sv, mv) > 0 {
+			s.notices.add(noticeKindServeNewer, serveNewerNotice(Version, lk.Version))
+		}
+	}
 	return lk, nil
 }
 
