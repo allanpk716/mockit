@@ -54,13 +54,13 @@ type server struct {
 	// 每类(kind)每进程至多附一次;#11 的新版提醒复用此机制。
 	notices *noticeBoard
 
-	// up 是 mockit_upgrade 工具与后台新版检查的依赖(票 #16);nil 时
+	// updeps 是 mockit_upgrade 工具与后台新版检查的依赖(票 #16);nil 时
 	// 工具报未配置、后台检查不进行。生产由 Run 构造,测试注入假 release。
-	up *upgradeDeps
+	updeps *upgradeDeps
 
-	// upd 是后台新版检查的进程内状态(在飞/已升级标记,票 #16);
+	// updateState 是后台新版检查的进程内状态(在飞/已升级标记,票 #16);
 	// onCheckDone 是每次后台检查收尾的回调,仅为测试同步用,生产为 nil。
-	upd        updateCheck
+	updateState updateCheck
 	onCheckDone func(upgrade.Result)
 
 	// 并发与串行化(规格 #4 票 08):工具调用各自在 goroutine 里执行,
@@ -101,9 +101,9 @@ func Run(cfg *config.Config) int {
 		ensure: func() (*lifecycle.Lock, error) {
 			return ensureServer(cfg, defaultSpawnServe)
 		},
-		httpc: &http.Client{Timeout: 60 * time.Second},
+		httpc:   &http.Client{Timeout: 60 * time.Second},
 		notices: newNoticeBoard(),
-		up:     prodUpgradeDeps(cfg),
+		updeps:  prodUpgradeDeps(cfg),
 	}
 	s.logf("mockit mcp %s 就绪(dataDir=%q)", Version, cfg.DataDir)
 	return s.loop(os.Stdin)

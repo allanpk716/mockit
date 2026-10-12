@@ -15,7 +15,6 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"mockit/internal/config"
 	"mockit/internal/lifecycle"
@@ -120,27 +119,11 @@ func runUpgrade(args []string) int {
 		}
 		return 0
 	}
-	exe, err := currentExePath()
+	u, err := upgrade.ProdUpgrader(cfg.DataDir, Version)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "upgrade:", err)
 		return 1
 	}
-	skillsRoot, err := upgrade.DefaultSkillsRoot()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "upgrade:", err)
-		return 1
-	}
-	claudeCfg, err := upgrade.DefaultClaudeConfigPath()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "upgrade:", err)
-		return 1
-	}
-	u := upgrade.NewUpgrader()
-	u.ExePath = exe
-	u.SkillsRoot = skillsRoot
-	u.DataDir = cfg.DataDir
-	u.ClaudeConfigPath = claudeCfg
-	u.Current = Version
 	rep, err := u.Upgrade(context.Background(), version)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "upgrade:", err)
@@ -153,24 +136,11 @@ func runUpgrade(args []string) int {
 // removeOldBinary 尽力清理同目录下升级残留的 <可执行名>.old(票 #12):
 // 任何子命令启动时调用,删不掉静默跳过。
 func removeOldBinary() {
-	exe, err := currentExePath()
+	exe, err := upgrade.CurrentExePath()
 	if err != nil {
 		return
 	}
 	upgrade.RemoveOldBinary(exe)
-}
-
-// currentExePath 返回当前运行文件解析软链之后的真实路径——与升级替换
-// 目标一致。
-func currentExePath() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("无法确定当前可执行文件: %w", err)
-	}
-	if real, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = real
-	}
-	return exe, nil
 }
 
 // 确保 lifecycle 包进入编译(锁文件读写助手,serve/mcp 共用)。

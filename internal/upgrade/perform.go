@@ -25,14 +25,14 @@ import (
 // release 基地址、要替换的可执行文件路径、技能目录、数据目录(升级锁与
 // 检查缓存)、用户级 Claude 配置路径、当前版本、执行新二进制的函数。
 type Upgrader struct {
-	BaseURL          string                              // release 基地址
-	ExePath          string                              // 要替换的可执行文件(已解析软链的真实路径)
-	SkillsRoot       string                              // 技能根目录(报告技能路径)
-	DataDir          string                              // 数据目录(升级锁、检查缓存)
-	ClaudeConfigPath string                              // 用户级 Claude 配置(~/.claude.json),只读
-	Current          string                              // 当前版本(如 0.2.0)
+	BaseURL          string                                 // release 基地址
+	ExePath          string                                 // 要替换的可执行文件(已解析软链的真实路径)
+	SkillsRoot       string                                 // 技能根目录(报告技能路径)
+	DataDir          string                                 // 数据目录(升级锁、检查缓存)
+	ClaudeConfigPath string                                 // 用户级 Claude 配置(~/.claude.json),只读
+	Current          string                                 // 当前版本(如 0.2.0)
 	RunBinary        func(exe string, args ...string) error // 执行新二进制;nil 用真实 exec
-	Client           *http.Client                        // 可选注入;默认遵守代理环境变量
+	Client           *http.Client                           // 可选注入;默认遵守代理环境变量
 }
 
 // NewUpgrader 构造带生产默认值的执行升级入口:release 基地址(可被隐藏
@@ -40,6 +40,45 @@ type Upgrader struct {
 // (路径、数据目录、当前版本)由调用方填入。
 func NewUpgrader() *Upgrader {
 	return &Upgrader{BaseURL: defaultBaseURL(), RunBinary: ExecBinary}
+}
+
+// CurrentExePath 返回当前运行文件解析软链之后的真实路径——与升级替换
+// 目标一致(审查 T4:原先在 main.go 与 mcp/upgrade_tool.go 各解析一份)。
+func CurrentExePath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("无法确定当前可执行文件: %w", err)
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	return exe, nil
+}
+
+// ProdUpgrader 构造生产升级依赖(审查 T4:装配逻辑原先在 main.go 与
+// mcp/upgrade_tool.go 各一份):替换目标为当前可执行文件真实路径,
+// 技能目录与用户级 Claude 配置取默认,基地址走默认(可被隐藏环境变量
+// 覆盖)。路径解析失败返回错误——调用方降级为"升级未配置"或直接报错。
+func ProdUpgrader(dataDir, current string) (*Upgrader, error) {
+	exe, err := CurrentExePath()
+	if err != nil {
+		return nil, err
+	}
+	skillsRoot, err := DefaultSkillsRoot()
+	if err != nil {
+		return nil, err
+	}
+	claudeCfg, err := DefaultClaudeConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	u := NewUpgrader()
+	u.ExePath = exe
+	u.SkillsRoot = skillsRoot
+	u.DataDir = dataDir
+	u.ClaudeConfigPath = claudeCfg
+	u.Current = current
+	return u, nil
 }
 
 // ExecBinary 真实执行一个二进制(升级后以新二进制跑 install-skill 用)。
@@ -148,7 +187,7 @@ func normalizeTag(v string) (string, error) {
 	if !strings.HasPrefix(tag, "v") {
 		tag = "v" + tag
 	}
-	if _, ok := parseSemver(tag); !ok {
+	if _, ok := ParseSemver(tag); !ok {
 		return "", fmt.Errorf("--version %q 不是 vX.Y.Z 形式", v)
 	}
 	return tag, nil

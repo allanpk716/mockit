@@ -200,7 +200,7 @@ func TestToolsListIncludesMockitUpgrade(t *testing.T) {
 func TestUpgradeToolCheckOnly(t *testing.T) {
 	fx, dep := newUpgradeFixture(t, "v0.3.0", "0.2.0")
 	s, _, _ := newTestSrv(t, "")
-	s.up = dep
+	s.updeps = dep
 
 	text, isErr := s.callTool(context.Background(), "mockit_upgrade", mustJSON(t, map[string]any{"check_only": true}))
 	if isErr {
@@ -225,7 +225,7 @@ func TestUpgradeToolCheckOnly(t *testing.T) {
 func TestUpgradeToolPerformsUpgrade(t *testing.T) {
 	fx, dep := newUpgradeFixture(t, "v0.3.0", "0.2.0")
 	s, _, _ := newTestSrv(t, "")
-	s.up = dep
+	s.updeps = dep
 
 	text, isErr := s.callTool(context.Background(), "mockit_upgrade", mustJSON(t, map[string]any{}))
 	if isErr {
@@ -259,7 +259,7 @@ func TestUpgradeToolPerformsUpgrade(t *testing.T) {
 func TestUpgradeToolBadVersion(t *testing.T) {
 	_, dep := newUpgradeFixture(t, "v0.3.0", "0.2.0")
 	s, _, _ := newTestSrv(t, "")
-	s.up = dep
+	s.updeps = dep
 
 	text, isErr := s.callTool(context.Background(), "mockit_upgrade", mustJSON(t, map[string]any{"version": "abc"}))
 	if !isErr || !strings.Contains(text, "不是 vX.Y.Z 形式") {
@@ -326,7 +326,7 @@ func newUpdateSrv(t *testing.T, rel *fakeRelease, current string) (*server, *byt
 			Client:    &http.Client{Timeout: 5 * time.Second},
 		},
 	}
-	s.up = dep
+	s.updeps = dep
 	done := make(chan upgrade.Result, 8)
 	s.onCheckDone = func(res upgrade.Result) { done <- res }
 	return s, out, done
@@ -415,7 +415,7 @@ func TestUpdateCheckFailureSilent(t *testing.T) {
 	t.Cleanup(backend.Close)
 	s, out, _ := newTestSrv(t, backend.URL)
 	s.cfg.UpdateCheck = true
-	s.up = &upgradeDeps{
+	s.updeps = &upgradeDeps{
 		checker: &upgrade.Checker{
 			BaseURL: bad.URL, DataDir: t.TempDir(), Current: "0.2.0",
 			Client: &http.Client{Timeout: 5 * time.Second},
@@ -485,7 +485,7 @@ func TestUpgradeSuppressesUpdateNotice(t *testing.T) {
 	t.Cleanup(backend.Close)
 	s, out, _ := newTestSrv(t, backend.URL)
 	s.cfg.UpdateCheck = true
-	s.up = dep
+	s.updeps = dep
 
 	rep, isErr := callViaLoop(t, s, out, 1, "mockit_upgrade", `{}`)
 	if isErr || !strings.Contains(rep, "升级完成") {

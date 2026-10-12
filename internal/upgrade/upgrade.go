@@ -158,8 +158,8 @@ func (c *Checker) Check(ctx context.Context, force bool) Result {
 	}
 	res.Latest = latest
 
-	cur, curOK := parseSemver(c.Current)
-	lat, latOK := parseSemver(latest)
+	cur, curOK := ParseSemver(c.Current)
+	lat, latOK := ParseSemver(latest)
 	switch {
 	case !curOK || !latOK || cur.Cmp(lat) > 0:
 		res.State = StateDev
@@ -179,7 +179,7 @@ func (c *Checker) readCache() (checkCache, bool) {
 	if !ok {
 		return checkCache{}, false
 	}
-	if _, ok := parseSemver(cc.Latest); ok && time.Since(cc.CheckedAt) <= c.ttl() {
+	if _, ok := ParseSemver(cc.Latest); ok && time.Since(cc.CheckedAt) <= c.ttl() {
 		return cc, true
 	}
 	if !cc.FailedAt.IsZero() && time.Since(cc.FailedAt) <= c.ttl() {
@@ -247,7 +247,7 @@ func (c *Checker) fetchLatest(ctx context.Context) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("最终地址里没有版本 tag(得 %q)", resp.Request.URL.Path)
 	}
-	if _, ok := parseSemver(tag); !ok {
+	if _, ok := ParseSemver(tag); !ok {
 		return "", fmt.Errorf("tag %q 不是 vX.Y.Z 形式", tag)
 	}
 	return tag, nil
@@ -266,26 +266,29 @@ func tagFromPath(p string) (string, bool) {
 	return tag, true
 }
 
-// semver 是解析后的语义化版本(仅 vX.Y.Z;发布契约不含预发布段)。
-type semver struct {
+// Semver 是解析后的语义化版本(仅 vX.Y.Z;发布契约不含预发布段)。
+// 全仓唯一一份解析/比较实现:internal/mcp 的 serve 版本判定也用它
+// (审查 T3,原两份实现严格度不一致)。
+type Semver struct {
 	major, minor, patch int
 }
 
-// parseSemver 解析 vX.Y.Z 或 X.Y.Z;解析不了第二个返回值为假。
-func parseSemver(s string) (semver, bool) {
+// ParseSemver 解析 vX.Y.Z 或 X.Y.Z(允许首尾空白);解析不了第二个
+// 返回值为假。三段须为纯数字(不认 "+1"、后缀、缺段等)。
+func ParseSemver(s string) (Semver, bool) {
 	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
 	parts := strings.Split(s, ".")
 	if len(parts) != 3 {
-		return semver{}, false
+		return Semver{}, false
 	}
-	var v semver
+	var v Semver
 	for i, part := range parts {
 		if part == "" || strings.TrimLeft(part, "0123456789") != "" {
-			return semver{}, false
+			return Semver{}, false
 		}
 		n, err := strconv.Atoi(part)
 		if err != nil {
-			return semver{}, false
+			return Semver{}, false
 		}
 		switch i {
 		case 0:
@@ -300,7 +303,7 @@ func parseSemver(s string) (semver, bool) {
 }
 
 // Cmp 按 semver 比较:-1 小于、0 相等、1 大于。
-func (v semver) Cmp(o semver) int {
+func (v Semver) Cmp(o Semver) int {
 	for _, p := range [3][2]int{{v.major, o.major}, {v.minor, o.minor}, {v.patch, o.patch}} {
 		switch {
 		case p[0] < p[1]:

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"mockit/internal/lifecycle"
+	"mockit/internal/upgrade"
 )
 
 // maxFileBytes 单候选文件上限(spec 内容管道:单文件 ≤20MB)。
@@ -174,8 +175,8 @@ func (s *server) resolveLock() (*lifecycle.Lock, error) {
 	}
 	// ADR 0001/票 13:serve 比本 MCP 新时直接复用,但在本进程的工具结果
 	// 末尾提示一次"请重启 Claude Code"(每进程一次)。
-	if sv, ok := parseSemver(lk.Version); ok {
-		if mv, ok2 := parseSemver(Version); ok2 && compareSemver(sv, mv) > 0 {
+	if sv, ok := upgrade.ParseSemver(lk.Version); ok {
+		if mv, ok2 := upgrade.ParseSemver(Version); ok2 && sv.Cmp(mv) > 0 {
 			s.notices.add(noticeKindServeNewer, serveNewerNotice(Version, lk.Version))
 		}
 	}

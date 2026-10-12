@@ -39,34 +39,34 @@ func (s *server) maybeCheckUpdate() {
 	if s.cfg == nil || !s.cfg.UpdateCheck {
 		return
 	}
-	if s.up == nil || s.up.checker == nil {
+	if s.updeps == nil || s.updeps.checker == nil {
 		return
 	}
-	s.upd.mu.Lock()
-	if s.upd.checking || s.upd.upgraded {
-		s.upd.mu.Unlock()
+	s.updateState.mu.Lock()
+	if s.updateState.checking || s.updateState.upgraded {
+		s.updateState.mu.Unlock()
 		return
 	}
-	s.upd.checking = true
-	s.upd.mu.Unlock()
+	s.updateState.checking = true
+	s.updateState.mu.Unlock()
 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				s.logf("新版检查内部错误: %v", r)
 			}
-			s.upd.mu.Lock()
-			s.upd.checking = false
-			s.upd.mu.Unlock()
+			s.updateState.mu.Lock()
+			s.updateState.checking = false
+			s.updateState.mu.Unlock()
 		}()
-		res := s.up.checker.Check(context.Background(), false)
+		res := s.updeps.checker.Check(context.Background(), false)
 		if res.State == upgrade.StateUpgradable {
-			s.upd.mu.Lock()
-			upgraded := s.upd.upgraded
-			s.upd.mu.Unlock()
+			s.updateState.mu.Lock()
+			upgraded := s.updateState.upgraded
+			s.updateState.mu.Unlock()
 			if !upgraded {
 				// 开发版/已是最新不提醒;失败静默(状态非 upgradable)。
-				s.notices.add(noticeKindUpdate, updateNotice(res.Latest, s.up.checker.Current))
+				s.notices.add(noticeKindUpdate, updateNotice(res.Latest, s.updeps.checker.Current))
 			}
 		}
 		if s.onCheckDone != nil {
