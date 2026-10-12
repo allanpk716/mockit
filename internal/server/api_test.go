@@ -561,7 +561,7 @@ func TestReviewCommentRules(t *testing.T) {
 	resp := postJSON(t, ts, "/api/review", reviewIn{ID: id, Decision: store.DecisionReject, Comment: tooLong})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("打回 2001 字应 400,得 %d: %s", resp.StatusCode, drain(t, resp))
-		}
+	}
 	var e map[string]string
 	decodeJSON(t, resp, &e)
 	if !strings.Contains(e["error"], "批注") {

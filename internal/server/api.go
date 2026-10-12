@@ -32,11 +32,11 @@ var idRe = regexp.MustCompile(`^[0-9a-z]{6}$`)
 
 // Server 聚合 HTTP 面的全部依赖;路由在 newServer 注册。
 type Server struct {
-	dataDir string
-	store   *store.Store
-	token   string // shutdown 校验用,与 lock.token 同源
-	lg      *log.Logger
-	stop    chan struct{} // shutdown 命中后关闭,Serve 据此优雅退出
+	dataDir  string
+	store    *store.Store
+	token    string // shutdown 校验用,与 lock.token 同源
+	lg       *log.Logger
+	stop     chan struct{} // shutdown 命中后关闭,Serve 据此优雅退出
 	stopOnce sync.Once
 	// waiters 登记详情 API 长轮询等待者(票 09):裁决成功路径在进程内
 	// 唤醒,不轮询数据库。
