@@ -11,6 +11,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"os"
@@ -67,6 +68,8 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(path)
+	case "upgrade":
+		os.Exit(runUpgrade(os.Args[2:]))
 	default:
 		usage()
 		os.Exit(2)
@@ -78,7 +81,37 @@ func usage() {
 }
 
 func usageText() string {
-	return "用法: mockit serve | mockit mcp | mockit version | mockit install-skill\n"
+	return "用法: mockit serve | mockit mcp | mockit version | mockit install-skill | mockit upgrade [--check]\n"
+}
+
+// runUpgrade 是 `mockit upgrade` 的薄转发:本版仅支持 --check(查询最新版本,
+// 强制刷新缓存);完整升级由后续票实现。
+func runUpgrade(args []string) int {
+	check := false
+	for _, a := range args {
+		if a == "--check" {
+			check = true
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "未知参数: %s\n", a)
+		usage()
+		return 2
+	}
+	if !check {
+		fmt.Fprintln(os.Stderr, "mockit upgrade 尚未实现(本版仅支持 --check)")
+		return 1
+	}
+	cfg, err := config.Load(nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config:", err)
+		return 1
+	}
+	res := upgrade.NewChecker(cfg.DataDir, Version).Check(context.Background(), true)
+	fmt.Println(res)
+	if res.State == upgrade.StateFailed {
+		return 1
+	}
+	return 0
 }
 
 // removeOldBinary 尽力清理同目录下升级残留的 <可执行名>.old(票 #12):
