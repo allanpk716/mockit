@@ -201,7 +201,7 @@ function init(){
     $('btn-primary').disabled = true;
     $('btn-reject').disabled = true;
     var chip = $('note-chip');
-    chip.textContent = '已审 · ' + decisionText(sub) + (sub.comment ? ' · 批注:' + truncate(sub.comment, 60) : '');
+    chip.textContent = '已审 · ' + decisionText(sub) + (sub.comment ? ' · 批注:' + truncate(sub.comment, SUMMARY_LEN) : '');
     chip.hidden = false;
   }
   fitBar();

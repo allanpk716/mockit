@@ -171,9 +171,9 @@ func TestWebVariantReviewPanel(t *testing.T) {
 		"'提交失败: '",
 	)
 
-	// 已审态底栏摘要:批注截断约 60 字,全文留给详情页
+	// 已审态底栏摘要:批注截断约 60 字(用常量),全文留给详情页
 	mustContain(t, body, "壳页已审摘要",
-		"truncate(sub.comment, 60)",
+		"truncate(sub.comment, SUMMARY_LEN)",
 	)
 }
 
