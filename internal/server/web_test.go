@@ -148,19 +148,26 @@ func TestWebVariantReviewPanel(t *testing.T) {
 	}
 
 	// 底部面板:多行批注框、剩余字数计数、确认、取消;上限 2000 字按字符计
+	// (textarea 不用 maxlength:它按 UTF-16 码元计数,emoji 记 2,会拦在
+	// 2000 字得;计数与拦截都按码点自行实现,服务端 400 兕底)
 	mustContain(t, body, "壳页面板",
 		`id="panel"`,
 		`<textarea id="comment"`,
-		`maxlength="2000"`,
 		`id="count"`,
 		`id="panel-ok"`,
 		`id="panel-cancel"`,
 		"MAX_COMMENT = 2000",
 	)
+	if strings.Contains(body, `maxlength="2000"`) {
+		t.Fatal("批注框不应依赖 maxlength:它按 UTF-16 码元计数,与按字符计的口径不一致")
+	}
 
-	// 关键分支:打回空批注前端拦截;裁决失败就地报错且批注不丢
+	// 关键分支:打回空批注前端拦截;超限前端拦截(计数器转错误态、确认
+	// 被拒并给出明确文案);裁决失败就地报错且批注不丢
 	mustContain(t, body, "壳页面板分支",
 		"打回必须写批注",
+		"'已超 '",
+		"批注超过 2000 字上限",
 		"'提交失败: '",
 	)
 

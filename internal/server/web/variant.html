@@ -101,7 +101,7 @@ button{font:inherit;cursor:pointer;touch-action:manipulation}
 <div id="panel" hidden role="dialog" aria-label="裁决批注">
   <h2 id="panel-title"></h2>
   <p id="panel-hint"></p>
-  <textarea id="comment" maxlength="2000" placeholder="批注(打回必填)" autocomplete="off"></textarea>
+  <textarea id="comment" placeholder="批注(打回必填)" autocomplete="off"></textarea>
   <div class="panel-meta">
     <span id="count"></span>
     <span id="err" hidden></span>
@@ -123,7 +123,10 @@ var sub = null;
 var multi = false;
 var busy = false;
 var panelDecision = '';
-/* 批注上限 2000 字,按字符计(非字节),与服务端 /api/review 校验一致 */
+/* 批注上限 2000 字,按字符计(码点,非字节/UTF-16 码元),与服务端
+ /api/review 校验同口径。textarea 自带 maxlength 按 UTF-16 码元计数
+ (emoji 记 2),会拦在 2000 字符之前,故不设 maxlength,计数与超限
+ 拦截都在此按码点自行实现,服务端 400 兕底。 */
 var MAX_COMMENT = 2000;
 /* 已审态底栏摘要的批注截断长度(约 60 字),全文在详情页展示 */
 var SUMMARY_LEN = 60;
@@ -226,8 +229,13 @@ function clearDraft(){
 function updateCount(){
   var left = MAX_COMMENT - charCount($('comment').value);
   var c = $('count');
-  c.textContent = '还可写 ' + left + ' 字';
-  c.style.color = left <= 100 ? 'var(--bad)' : '';
+  if(left < 0){ /* 超限:计数器转错误态,确认同时被拦(见 confirmPanel) */
+    c.textContent = '已超 ' + (-left) + ' 字';
+    c.style.color = 'var(--bad)';
+  }else{
+    c.textContent = '还可写 ' + left + ' 字';
+    c.style.color = left <= 100 ? 'var(--bad)' : '';
+  }
 }
 
 function openPanel(decision){
@@ -264,6 +272,10 @@ function confirmPanel(){
   var comment = $('comment').value.trim();
   if(panelDecision === 'reject' && comment === ''){
     showErr('打回必须写批注,说明哪里不行、往哪改'); /* 前端拦截,服务端兜底 400 */
+    return;
+  }
+  if(charCount(comment) > MAX_COMMENT){
+    showErr('批注超过 2000 字上限(按字符计),请精简后重试'); /* 前端拦截,服务端兕底 400 */
     return;
   }
   setBusy(true);
