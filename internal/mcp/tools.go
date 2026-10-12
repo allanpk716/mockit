@@ -200,17 +200,17 @@ func (s *server) apiPost(ctx context.Context, base, path string, body []byte) (i
 }
 
 func (s *server) apiGet(ctx context.Context, base, path string) (int, []byte, error) {
-	return httpGet(s.httpc, ctx, base+path)
+	return httpGet(ctx, s.httpc, base+path)
 }
 
 // apiGetLong 同 apiGet 但走无固定超时的长轮询客户端(带 wait 的调用用),
 // 超时由调用方注入的 ctx deadline 控制(票 09)。
 func (s *server) apiGetLong(ctx context.Context, base, path string) (int, []byte, error) {
-	return httpGet(waitHTTPClient, ctx, base+path)
+	return httpGet(ctx, waitHTTPClient, base+path)
 }
 
 // httpGet 用给定客户端发 GET;ctx 随请求下发,取消即中断。
-func httpGet(client *http.Client, ctx context.Context, url string) (int, []byte, error) {
+func httpGet(ctx context.Context, client *http.Client, url string) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, nil, err
