@@ -59,13 +59,20 @@ type server struct {
 	// 避免半途丢弃已产生的响应。
 	wg sync.WaitGroup
 
-	// 取消(规格 #4 票 08):mu 保护下面两张表,key 为规范化后的请求 id(idKey)。
-	// inflight 登记在飞调用的 cancel(收到 notifications/cancelled 即调,
-	// 中断该调用正在进行的 HTTP 请求);cancelled 标记已取消的在飞请求,
-	// 其 goroutine 收尾时据此不再回复(MCP 规范:已取消的请求不回应)。
-	mu        sync.Mutex
-	inflight  map[string]context.CancelFunc
-	cancelled map[string]bool
+	// 取消(规格 #4 票 08):mu 保护 inflight,key 为规范化后的请求 id(idKey)。
+	// 每次调用各持一个 inflightCall(cancel + 不再回复标记);同 id 重入时
+	// 旧调用收尾只清理自己名下的登记(按指针比对),不得删掉新调用的
+	// cancel/标记——否则新调用变得不可取消、抑制标记被吞(评审修复)。
+	mu       sync.Mutex
+	inflight map[string]*inflightCall
+}
+
+// inflightCall 登记一次在飞工具调用:cancel 中断其正在进行的 HTTP 请求;
+// cancelled 置位后共 goroutine 收尾不再回复(MCP 规范:已取消的请求不回应;
+// 被同 id 重入顶替的旧调用同样置位,同一 id 至多由最新调用应答)。
+type inflightCall struct {
+	cancel    context.CancelFunc
+	cancelled bool
 }
 
 // Run 启动 stdio MCP server,阻塞至 stdin EOF,返回进程退出码。
@@ -233,14 +240,18 @@ func (s *server) handleToolCall(id json.RawMessage, params json.RawMessage) {
 	// 收到针对本 id 的取消通知即被中断。
 	key := idKey(id)
 	ctx, cancel := context.WithCancel(context.Background())
+	call := &inflightCall{cancel: cancel}
 	s.mu.Lock()
 	if s.inflight == nil {
-		s.inflight = map[string]context.CancelFunc{}
+		s.inflight = map[string]*inflightCall{}
 	}
 	if old, ok := s.inflight[key]; ok {
-		old() // 防御:MCP 不允许同 id 重入,真发生时先取消旧调用避免泄漏
+		// 防御:MCP 不允许同 id 重入,真发生时先取消旧调用避免泄漏;
+		// 旧调用被顶替,同样不再回复(同一 id 只由新调用应答)。
+		old.cancelled = true
+		old.cancel()
 	}
-	s.inflight[key] = cancel
+	s.inflight[key] = call
 	s.mu.Unlock()
 	s.wg.Add(1)
 	go func() {
@@ -248,9 +259,12 @@ func (s *server) handleToolCall(id json.RawMessage, params json.RawMessage) {
 		text, isErr := s.safeCallTool(ctx, p.Name, p.Arguments)
 		cancel() // 调用已结束,释放 ctx
 		s.mu.Lock()
-		suppress := s.cancelled[key]
-		delete(s.inflight, key)
-		delete(s.cancelled, key)
+		suppress := call.cancelled
+		// 只清理自己名下的登记:key 已归重入后的新调用时,老调用的
+		// 收尾不得删掉新调用的 cancel/标记(否则新调用不可取消)。
+		if s.inflight[key] == call {
+			delete(s.inflight, key)
+		}
 		s.mu.Unlock()
 		if suppress {
 			// MCP 规范:已取消的请求不再回复(通知本身也无回应)。
@@ -283,15 +297,12 @@ func (s *server) handleCancelled(params json.RawMessage) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cancel, ok := s.inflight[key]
+	call, ok := s.inflight[key]
 	if !ok {
 		return // 已完成或从未存在:按规范忽略
 	}
-	if s.cancelled == nil {
-		s.cancelled = map[string]bool{}
-	}
-	s.cancelled[key] = true
-	cancel()
+	call.cancelled = true
+	call.cancel()
 	s.logf("请求 %s 被取消(reason=%q):中断其在飞调用且不再回复", key, p.Reason)
 }
 

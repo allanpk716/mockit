@@ -316,6 +316,101 @@ func TestConcurrentToolCallWritesDoNotInterleave(t *testing.T) {
 	}
 }
 
+// 验收(评审修复 F1):同 id 重入顶替旧调用后,新调用名下的取消登记
+// 不被旧调用的收尾吃掉——取消通知仍能中断重入后的新调用,且被顶替的
+// 旧调用与被取消的新调用都不再回复(同一 id 至多由最新调用应答)。
+func TestToolCallIdReuseKeepsReplacementCancellable(t *testing.T) {
+	enteredA := make(chan struct{}, 1)
+	interruptedA := make(chan struct{}, 1)
+	enteredB := make(chan struct{}, 1)
+	interruptedB := make(chan struct{}, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/submissions/slow00":
+			select {
+			case enteredA <- struct{}{}:
+			default:
+			}
+			<-r.Context().Done() // 挂住直到客户端断开
+			select {
+			case interruptedA <- struct{}{}:
+			default:
+			}
+		case "/api/submissions/slow02":
+			select {
+			case enteredB <- struct{}{}:
+			default:
+			}
+			<-r.Context().Done()
+			select {
+			case interruptedB <- struct{}{}:
+			default:
+			}
+		case "/api/submissions/ok11ok":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"ok11ok","title":"正常提交","status":"pending","decision":"","chosen_variant":null,"comment":"","variants":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backend.Close()
+
+	p := startSession(t, backend.URL)
+	// 第一个 id=1:慢调用在飞
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mockit_get_review","arguments":{"id":"slow00"}}}`)
+	waitSig(t, enteredA, 5*time.Second, "第一个调用进入假 serve")
+
+	// 同 id=1 立即重入:新调用顶替旧调用,旧调用的 HTTP 请求被中断
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mockit_get_review","arguments":{"id":"slow02"}}}`)
+	waitSig(t, interruptedA, 5*time.Second, "重入顶替应中断旧调用的 HTTP 请求")
+	waitSig(t, enteredB, 5*time.Second, "重入的新调用进入假 serve")
+
+	// 旧实现的被顶替调用会回复一条 context canceled 错误,且其收尾会删掉
+	// 新调用名下的登记;修复后旧调用不再回复。这里吸收至多一条旧调用的
+	// 回复(观察即同步:回复发生在收尾清理之后),保证随后的取消通知
+	// 一定晚于旧调用收尾,把竞态从被测行为里挤出去。
+	select {
+	case ln := <-p.outW.ch:
+		var env respEnvelope
+		if err := json.Unmarshal([]byte(ln), &env); err != nil {
+			t.Fatalf("旧调用残余行不是合法 JSON: %v\n行: %s", err, ln)
+		}
+		p.all = append(p.all, env)
+		if idKey(env.ID) != "1" {
+			t.Fatalf("此窗口内只可能出现被顶替的旧调用(id=1)回复,得 id=%s", env.ID)
+		}
+	case <-time.After(time.Second):
+		// 修复后的预期:被顶替的旧调用不再回复,静默等到窗口关闭
+	}
+
+	// 取消 id=1:应中断重入后的新调用(其登记未被旧调用收尾吃掉)
+	p.send(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1,"reason":"用户打断"}}`)
+	waitSig(t, interruptedB, 5*time.Second, "取消通知应中断重入后的新调用")
+
+	// 后续调用不受影响
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mockit_get_review","arguments":{"id":"ok11ok"}}}`)
+	env := p.recv(5*time.Second, "取消后的新工具调用响应")
+	if strings.TrimSpace(string(env.ID)) != "2" || env.Error != nil {
+		t.Fatalf("新工具调用响应不符: id=%s err=%+v", env.ID, env.Error)
+	}
+
+	// loop 退出即全部在飞调用收尾;id=1 不应留下任何回复(旧调用被顶替
+	// 不回复、新调用被取消不回复)。
+	if code := p.close(); code != 0 {
+		t.Fatalf("loop 退出码 = %d, want 0", code)
+	}
+	got := map[string]int{}
+	for _, env := range p.all {
+		got[idKey(env.ID)]++
+	}
+	if got["1"] != 0 {
+		t.Fatalf("被顶替/被取消的 id=1 不应收到任何回复, 实收 %d 条", got["1"])
+	}
+	if len(p.all) != 1 || got["2"] != 1 {
+		t.Fatalf("应有且仅有 id=2 一条响应, 实得 %v", got)
+	}
+}
+
 // 验收(票 09):带 wait 的长等待 get_review 被 notifications/cancelled
 // 中断——serve 侧观察到 HTTP 请求断开,被取消的请求不回复,后续调用正常;
 // wait 确实作为查询参数透传到了详情 API。
