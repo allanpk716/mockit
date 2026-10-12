@@ -114,14 +114,73 @@ func TestWebVariantJSBranches(t *testing.T) {
 	body := webBody(t, ts, "/s/"+id+"/v1")
 
 	// 按钮/提交分支:多候选=选它(choose+variant=n) / 单候选=通过(approve);
-	// 打回两分支共用;失败(如已审 409)就地显示,成功跳详情页。
+	// 打回两分支共用;点按钮先弹底部批注面板,确认才发裁决;失败(如已审 409)
+	// 在面板内就地显示,成功跳详情页。
 	mustContain(t, body, "壳页分支标记",
 		"multi ? 'choose' : 'approve'",
 		"multi ? '选它' : '通过'",
 		"dataset.mode = multi ? 'multi' : 'single'",
 		"body.variant = n",
-		"vote('reject')",
+		"openPanel('reject')",
 		"'提交失败: '",
+	)
+}
+
+// ---- 票 06 · 底栏改版与底部批注面板 ----
+// 底栏只剩候选圆点与两个按钮;点任一按钮从底部弹出面板(多行批注框、
+// 剩余字数、确认、取消);打回空批注前端拦截;已审态底栏只显摘要。
+func TestWebVariantReviewPanel(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	id := mustSubmit(t, ts,
+		htmlVariant("方案A", "<p>a</p>"),
+		htmlVariant("方案B", "<p>b</p>"),
+	)
+	body := webBody(t, ts, "/s/"+id+"/v1")
+
+	// 底栏:候选圆点 + 两个按钮;常驻单行批注输入框退场(批注改入面板)
+	mustContain(t, body, "壳页底栏",
+		`id="pills"`,
+		`id="btn-primary"`,
+		`id="btn-reject"`,
+	)
+	if strings.Contains(body, `<input id="comment"`) {
+		t.Fatal("壳页底栏不应再常驻单行批注输入框,批注应改入底部面板")
+	}
+
+	// 底部面板:多行批注框、剩余字数计数、确认、取消;上限 2000 字按字符计
+	mustContain(t, body, "壳页面板",
+		`id="panel"`,
+		`<textarea id="comment"`,
+		`maxlength="2000"`,
+		`id="count"`,
+		`id="panel-ok"`,
+		`id="panel-cancel"`,
+		"MAX_COMMENT = 2000",
+	)
+
+	// 关键分支:打回空批注前端拦截;裁决失败就地报错且批注不丢
+	mustContain(t, body, "壳页面板分支",
+		"打回必须写批注",
+		"'提交失败: '",
+	)
+
+	// 已审态底栏摘要:批注截断约 60 字,全文留给详情页
+	mustContain(t, body, "壳页已审摘要",
+		"truncate(sub.comment, 60)",
+	)
+}
+
+// TestWebDetailCommentFullText 详情页批注全文:候选页底栏只给摘要,
+// 详情页显示全文且保留换行(white-space:pre-wrap + textContent 写入)。
+func TestWebDetailCommentFullText(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	id := mustSubmit(t, ts, htmlVariant("方案A", "<p>a</p>"))
+	body := webBody(t, ts, "/s/"+id)
+
+	mustContain(t, body, "详情页批注",
+		`id="comment"`,
+		"white-space:pre-wrap",
+		"'批注:' + s.comment",
 	)
 }
 

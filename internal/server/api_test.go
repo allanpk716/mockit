@@ -526,6 +526,89 @@ func TestReviewFlows(t *testing.T) {
 	drain(t, resp)
 }
 
+// TestReviewCommentRules 票 06:裁决批注规则加严——打回必填(去空白后非空),
+// 所有裁决批注上限 2000 字(按字符计,非字节);违反 400 且错误文本明确,
+// 其余裁决语义不变。
+func TestReviewCommentRules(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+
+	// 打回:空批注 / 纯空白批注 → 400
+	for name, comment := range map[string]string{
+		"空批注":   "",
+		"纯空白批注": " \n\t ",
+	} {
+		id := mustSubmit(t, ts, htmlVariant("A", "a"))
+		resp := postJSON(t, ts, "/api/review", reviewIn{ID: id, Decision: store.DecisionReject, Comment: comment})
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("打回 %s 应 400,得 %d: %s", name, resp.StatusCode, drain(t, resp))
+		}
+		var e map[string]string
+		decodeJSON(t, resp, &e)
+		if !strings.Contains(e["error"], "批注") {
+			t.Fatalf("打回 %s 错误文本应提到批注,得 %q", name, e["error"])
+		}
+		// 打回被拒后提交仍是待审,可以补批注重裁
+		var d detailOut
+		decodeJSON(t, get(t, ts, "/api/submissions/"+id), &d)
+		if d.Status != store.StatusPending {
+			t.Fatalf("打回被拒后应仍待审,得 %q", d.Status)
+		}
+	}
+
+	// 打回:2001 字(中文,按字符计非字节)→ 400
+	id := mustSubmit(t, ts, htmlVariant("A", "a"))
+	tooLong := strings.Repeat("改", 2001)
+	resp := postJSON(t, ts, "/api/review", reviewIn{ID: id, Decision: store.DecisionReject, Comment: tooLong})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("打回 2001 字应 400,得 %d: %s", resp.StatusCode, drain(t, resp))
+		}
+	var e map[string]string
+	decodeJSON(t, resp, &e)
+	if !strings.Contains(e["error"], "批注") {
+		t.Fatalf("超长错误文本应提到批注,得 %q", e["error"])
+	}
+
+	// 打回:恰好 2000 字中文 → 200,批注原样可取
+	resp = postJSON(t, ts, "/api/review", reviewIn{ID: id, Decision: store.DecisionReject, Comment: strings.Repeat("改", 2000)})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("打回 2000 字应 200,得 %d: %s", resp.StatusCode, drain(t, resp))
+	}
+	var d detailOut
+	decodeJSON(t, resp, &d)
+	if d.Decision != store.DecisionReject || len([]rune(d.Comment)) != 2000 {
+		t.Fatalf("打回 2000 字形状错: decision=%s commentRunes=%d", d.Decision, len([]rune(d.Comment)))
+	}
+
+	// 上限对任何裁决生效:通过 2001 字 → 400
+	idB := mustSubmit(t, ts, htmlVariant("A", "a"))
+	resp = postJSON(t, ts, "/api/review", reviewIn{ID: idB, Decision: store.DecisionApprove, Comment: strings.Repeat("好", 2001)})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("通过 2001 字应 400,得 %d: %s", resp.StatusCode, drain(t, resp))
+	}
+	drain(t, resp)
+
+	// 选中 2000 字 → 200;通过/选中不写批注 → 200
+	idC := mustSubmit(t, ts, htmlVariant("A", "a"), htmlVariant("B", "b"))
+	one := 1
+	resp = postJSON(t, ts, "/api/review", reviewIn{ID: idC, Decision: store.DecisionChoose, Variant: &one, Comment: strings.Repeat("选", 2000)})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("选中 2000 字应 200,得 %d: %s", resp.StatusCode, drain(t, resp))
+	}
+	drain(t, resp)
+	idD := mustSubmit(t, ts, htmlVariant("A", "a"), htmlVariant("B", "b"))
+	resp = postJSON(t, ts, "/api/review", reviewIn{ID: idD, Decision: store.DecisionChoose, Variant: &one})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("选中不写批注应 200,得 %d: %s", resp.StatusCode, drain(t, resp))
+	}
+	drain(t, resp)
+	idE := mustSubmit(t, ts, htmlVariant("A", "a"))
+	resp = postJSON(t, ts, "/api/review", reviewIn{ID: idE, Decision: store.DecisionApprove})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("通过不写批注应 200,得 %d: %s", resp.StatusCode, drain(t, resp))
+	}
+	drain(t, resp)
+}
+
 func TestPinToggle(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 	id := mustSubmit(t, ts, htmlVariant("A", "a"))

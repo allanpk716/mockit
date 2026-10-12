@@ -15,8 +15,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"mockit/internal/store"
 )
@@ -247,6 +249,9 @@ type reviewReq struct {
 	Comment  string `json:"comment"`
 }
 
+// maxCommentRunes 批注上限 2000 字(按字符计,非字节);打回必须带非空批注。
+const maxCommentRunes = 2000
+
 func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	var req reviewReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -261,7 +266,28 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	if req.Variant != nil {
 		chosen = *req.Variant
 	}
-	if err := s.store.SaveReview(req.ID, req.Decision, chosen, req.Comment); err != nil {
+	// 先取提交定状态:已审是终态,409 优先于批注校验(重复裁决哪怕带空批注
+	// 也应报"已审"而非 400);不存在则 404。
+	cur, err := s.store.Get(req.ID)
+	if err != nil {
+		writeErr(w, storeStatus(err), err.Error())
+		return
+	}
+	// 批注规则(票 06):打回去掉首尾空白后必须非空;任何裁决的批注
+	// 上限 2000 字(按字符计,非字节)。只拦待审新请求;旧数据不迁移,
+	// 已落库的空批注打回记录照常展示。批注去首尾空白后落库。
+	comment := strings.TrimSpace(req.Comment)
+	if cur.Status == store.StatusPending {
+		if req.Decision == store.DecisionReject && comment == "" {
+			writeErr(w, http.StatusBadRequest, "打回必须写批注,说明哪里不行、往哪改")
+			return
+		}
+		if utf8.RuneCountInString(req.Comment) > maxCommentRunes {
+			writeErr(w, http.StatusBadRequest, "批注超过 2000 字上限(按字符计)")
+			return
+		}
+	}
+	if err := s.store.SaveReview(req.ID, req.Decision, chosen, comment); err != nil {
 		writeErr(w, storeStatus(err), err.Error())
 		return
 	}
