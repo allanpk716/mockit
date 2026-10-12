@@ -10,23 +10,33 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"mockit/internal/config"
 	"mockit/internal/lifecycle"
 	"mockit/internal/mcp"
 	"mockit/internal/server"
+	"mockit/internal/upgrade"
 )
 
 // Version 是二进制版本;MCP 握手据此判断是否停旧起新。
 const Version = "0.2.0"
+
+// skillMD 是仓内技能正本,构建时内嵌(票 #12):install-skill 与后续升级
+// 共用这一份,确保二进制内技能与 skills/mockit/SKILL.md 不会分叉。
+//
+//go:embed skills/mockit/SKILL.md
+var skillMD []byte
 
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
+	removeOldBinary()
 	switch os.Args[1] {
 	case "serve":
 		cfg, err := config.Load(os.Args[2:])
@@ -44,6 +54,18 @@ func main() {
 		os.Exit(mcp.Run(cfg))
 	case "version":
 		fmt.Println(Version)
+	case "install-skill":
+		root, err := upgrade.DefaultSkillsRoot()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "install-skill:", err)
+			os.Exit(1)
+		}
+		path, err := upgrade.InstallSkill(root, skillMD)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(path)
 	default:
 		usage()
 		os.Exit(2)
@@ -51,7 +73,24 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, "用法: mockit serve | mockit mcp | mockit version\n")
+	fmt.Fprint(os.Stderr, usageText())
+}
+
+func usageText() string {
+	return "用法: mockit serve | mockit mcp | mockit version | mockit install-skill\n"
+}
+
+// removeOldBinary 尽力清理同目录下升级残留的 <可执行名>.old(票 #12):
+// 任何子命令启动时调用,删不掉静默跳过。
+func removeOldBinary() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real // 与升级替换目标一致:解析软链之后的真实路径
+	}
+	upgrade.RemoveOldBinary(exe)
 }
 
 // 确保 lifecycle 包进入编译(锁文件读写助手,serve/mcp 共用)。
