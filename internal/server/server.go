@@ -31,7 +31,7 @@ import (
 )
 
 // Version 与 main.go 的 Version 常量保持同步(勿 import main;两处同步维护)。
-const Version = "0.1.1"
+const Version = "0.2.0"
 
 // maxBindAttempts 端口漂移尝试次数:配置端口起,被占 +1,最多这多个(D8)。
 const maxBindAttempts = 10
@@ -135,6 +135,9 @@ func Serve(cfg *config.Config) int {
 	select {
 	case <-sigCh:
 		lg.Println("收到退出信号,优雅退出")
+		// 与 shutdown 命中同口径关停 stop:唤醒挂起的长轮询等待者,
+		// 不让它们吃满优雅退出期限。
+		s.stopOnce.Do(func() { close(s.stop) })
 	case <-s.stop:
 		lg.Println("收到 shutdown 请求,优雅退出")
 	case err := <-serveErr:

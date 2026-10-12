@@ -1,18 +1,22 @@
 // Package mcp 实现 stdio MCP server:agent 提交/查询的唯一通道(D3)。
 //
 // 协议:行分隔 JSON-RPC 2.0。stdout 只输出协议响应,一切日志走 stderr。
+// 并发模型(规格 #4 票 08):工具调用各自在 goroutine 里执行、响应写出
+// 串行化;notifications/cancelled 中断对应在飞的 HTTP 请求且不再回复。
 // serve 定位:ensure-server(锁分离协议 D17,票 08)——读 server.lock
 // 复用/停旧换新/冷启动拉起(经 start.lock 互斥,spawn 零闪窗)。
 package mcp
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"mockit/internal/config"
@@ -20,7 +24,7 @@ import (
 )
 
 // Version 与 main 包的 Version 常量保持同步(main 不可导入,此处复制;改动需两处同改)。
-const Version = "0.1.1"
+const Version = "0.2.0"
 
 // defaultProtocolVersion 是客户端 initialize 未携带 protocolVersion 时的回显缺省值。
 const defaultProtocolVersion = "2024-11-05"
@@ -44,6 +48,31 @@ type server struct {
 	ensure func() (*lifecycle.Lock, error)
 
 	httpc *http.Client
+
+	// 并发与串行化(规格 #4 票 08):工具调用各自在 goroutine 里执行,
+	// stdout 响应经 writeMu 串行化(一行一条完整 JSON,不交错);
+	// stderr 日志同样加锁(race 检测下并发写同一 io.Writer 才合法)。
+	writeMu sync.Mutex
+	errMu   sync.Mutex
+
+	// wg 记录在飞的工具调用;stdin 关闭后 loop 等它清零再退场,
+	// 避免半途丢弃已产生的响应。
+	wg sync.WaitGroup
+
+	// 取消(规格 #4 票 08):mu 保护 inflight,key 为规范化后的请求 id(idKey)。
+	// 每次调用各持一个 inflightCall(cancel + 不再回复标记);同 id 重入时
+	// 旧调用收尾只清理自己名下的登记(按指针比对),不得删掉新调用的
+	// cancel/标记——否则新调用变得不可取消、抑制标记被吞(评审修复)。
+	mu       sync.Mutex
+	inflight map[string]*inflightCall
+}
+
+// inflightCall 登记一次在飞工具调用:cancel 中断其正在进行的 HTTP 请求;
+// cancelled 置位后共 goroutine 收尾不再回复(MCP 规范:已取消的请求不回应;
+// 被同 id 重入顶替的旧调用同样置位,同一 id 至多由最新调用应答)。
+type inflightCall struct {
+	cancel    context.CancelFunc
+	cancelled bool
 }
 
 // Run 启动 stdio MCP server,阻塞至 stdin EOF,返回进程退出码。
@@ -84,7 +113,9 @@ type rpcResponse struct {
 	Error   *rpcError       `json:"error,omitempty"`
 }
 
-// loop 逐行读取并处理,直到 stdin EOF;返回退出码。
+// loop 逐行读取并处理,直到 stdin EOF;返回退出码。工具调用并发执行
+// (handleLine 内起 goroutine),读循环不被慢调用堵住;退出前等待在飞
+// 调用收尾,响应不半途丢弃。
 func (s *server) loop(in io.Reader) int {
 	r := bufio.NewReader(in)
 	for {
@@ -93,6 +124,7 @@ func (s *server) loop(in io.Reader) int {
 			s.handleLine(line)
 		}
 		if err != nil {
+			s.wg.Wait()
 			if err == io.EOF {
 				return 0
 			}
@@ -114,7 +146,11 @@ func (s *server) handleLine(line string) {
 		return
 	}
 	if req.ID == nil {
-		// 通知(notifications/initialized 等)不回应;其余通知记 stderr 便于排障。
+		// 通知一律不回应;notifications/cancelled 特判:中断对应在飞请求。
+		if req.Method == "notifications/cancelled" {
+			s.handleCancelled(req.Params)
+			return
+		}
 		if req.Method != "notifications/initialized" {
 			s.logf("忽略通知 %q", req.Method)
 		}
@@ -170,6 +206,23 @@ func (s *server) initializeResult(params json.RawMessage) initializeResult {
 	}
 }
 
+// idKey 把请求 id 规范化为 map key:JSON 值解码后再编码(数字 3 与 3.0
+// 同键),字符串保留引号;无法解析时退回原文。取消通知的 requestId 与
+// 请求自身的 id 经此对齐。
+func idKey(id json.RawMessage) string {
+	if len(id) == 0 {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal(id, &v); err != nil {
+		return string(id)
+	}
+	if b, err := json.Marshal(v); err == nil {
+		return string(b)
+	}
+	return string(id)
+}
+
 type callParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
@@ -181,36 +234,107 @@ func (s *server) handleToolCall(id json.RawMessage, params json.RawMessage) {
 		s.reply(id, nil, &rpcError{Code: codeInvalidParams, Message: "tools/call 缺少 name 或参数非法"})
 		return
 	}
-	text, isErr := s.safeCallTool(p.Name, p.Arguments)
-	s.reply(id, toolCallResult{
-		Content: []toolContent{{Type: "text", Text: text}},
-		IsError: isErr,
-	}, nil)
+	// 规格 #4 票 08:工具调用在独立 goroutine 里执行,慢调用不再堵住读循环
+	// (ping / notifications/cancelled 随时可进);响应经 reply 串行写出,
+	// 完成顺序允许与请求顺序不同(JSON-RPC 按 id 对账)。ctx 挂进在飞表,
+	// 收到针对本 id 的取消通知即被中断。
+	key := idKey(id)
+	ctx, cancel := context.WithCancel(context.Background())
+	call := &inflightCall{cancel: cancel}
+	s.mu.Lock()
+	if s.inflight == nil {
+		s.inflight = map[string]*inflightCall{}
+	}
+	if old, ok := s.inflight[key]; ok {
+		// 防御:MCP 不允许同 id 重入,真发生时先取消旧调用避免泄漏;
+		// 旧调用被顶替,同样不再回复(同一 id 只由新调用应答)。
+		old.cancelled = true
+		old.cancel()
+	}
+	s.inflight[key] = call
+	s.mu.Unlock()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		text, isErr := s.safeCallTool(ctx, p.Name, p.Arguments)
+		cancel() // 调用已结束,释放 ctx
+		s.mu.Lock()
+		suppress := call.cancelled
+		// 只清理自己名下的登记:key 已归重入后的新调用时,老调用的
+		// 收尾不得删掉新调用的 cancel/标记(否则新调用不可取消)。
+		if s.inflight[key] == call {
+			delete(s.inflight, key)
+		}
+		s.mu.Unlock()
+		if suppress {
+			// MCP 规范:已取消的请求不再回复(通知本身也无回应)。
+			return
+		}
+		s.reply(id, toolCallResult{
+			Content: []toolContent{{Type: "text", Text: text}},
+			IsError: isErr,
+		}, nil)
+	}()
 }
 
-// safeCallTool 兜底 panic,保证单个工具故障不杀死协议循环。
-func (s *server) safeCallTool(name string, args json.RawMessage) (text string, isErr bool) {
+// cancelParams 承接 notifications/cancelled(MCP 规范:requestId + 可选 reason)。
+type cancelParams struct {
+	RequestID json.RawMessage `json:"requestId"`
+	Reason    string          `json:"reason"`
+}
+
+// handleCancelled 按 MCP 规范处理取消通知:请求仍在飞则中断其 HTTP 调用
+// 并标记不再回复;已完成的 id 静默忽略;通知本身永不回应。
+func (s *server) handleCancelled(params json.RawMessage) {
+	var p cancelParams
+	if len(params) > 0 {
+		_ = json.Unmarshal(params, &p)
+	}
+	key := idKey(p.RequestID)
+	if key == "" {
+		s.logf("取消通知缺 requestId,忽略")
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	call, ok := s.inflight[key]
+	if !ok {
+		return // 已完成或从未存在:按规范忽略
+	}
+	call.cancelled = true
+	call.cancel()
+	s.logf("请求 %s 被取消(reason=%q):中断其在飞调用且不再回复", key, p.Reason)
+}
+
+// safeCallTool 兜底 panic,保证单个工具故障不杀死协议循环;ctx 随调用
+// 下发,取消即中断其在飞的 HTTP 请求。
+func (s *server) safeCallTool(ctx context.Context, name string, args json.RawMessage) (text string, isErr bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			text = fmt.Sprintf("工具内部错误: %v", r)
 			isErr = true
 		}
 	}()
-	return s.callTool(name, args)
+	return s.callTool(ctx, name, args)
 }
 
-// reply 写一行协议响应到 stdout。
+// reply 写一行协议响应到 stdout;writeMu 保证并发调用下每条响应独占
+// 一行完整 JSON,不交错。
 func (s *server) reply(id json.RawMessage, result any, rpcErr *rpcError) {
 	b, err := json.Marshal(rpcResponse{JSONRPC: "2.0", ID: id, Result: result, Error: rpcErr})
 	if err != nil {
 		s.logf("序列化响应失败: %v", err)
 		return
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if _, err := fmt.Fprintf(s.out, "%s\n", b); err != nil {
 		s.logf("写 stdout 失败: %v", err)
 	}
 }
 
 func (s *server) logf(format string, args ...any) {
+	s.errMu.Lock()
+	defer s.errMu.Unlock()
 	fmt.Fprintf(s.errOut, "mcp: "+format+"\n", args...)
 }

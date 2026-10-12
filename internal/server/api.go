@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
@@ -15,8 +16,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"mockit/internal/store"
 )
@@ -35,7 +38,10 @@ type Server struct {
 	lg       *log.Logger
 	stop     chan struct{} // shutdown 命中后关闭,Serve 据此优雅退出
 	stopOnce sync.Once
-	mux      *http.ServeMux
+	// waiters 登记详情 API 长轮询等待者(票 09):裁决成功路径在进程内
+	// 唤醒,不轮询数据库。
+	waiters *reviewWaiters
+	mux     *http.ServeMux
 }
 
 // newServer 构造 HTTP 面(不含端口绑定/lock/信号,那些属 Serve)。
@@ -50,6 +56,7 @@ func newServer(dataDir string, st *store.Store, token string, lg *log.Logger) *S
 		token:   token,
 		lg:      lg,
 		stop:    make(chan struct{}),
+		waiters: newReviewWaiters(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleListPage)
@@ -232,10 +239,26 @@ func (s *Server) handleDetailAPI(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, store.ErrNotFound.Error())
 		return
 	}
+	// 票 09:可选 wait(秒,0~600)长轮询;非法值 400。
+	wait, ok := parseWaitSeconds(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "wait 无效:须为 0~600 的整数秒")
+		return
+	}
 	sub, err := s.store.Get(id)
 	if err != nil {
 		writeErr(w, storeStatus(err), err.Error())
 		return
+	}
+	if wait > 0 && sub.Status == store.StatusPending {
+		sub, err = s.awaitReview(r.Context(), id, wait)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return // 客户端已断开,不再写响应
+			}
+			writeErr(w, storeStatus(err), err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, subToJSON(sub, s.noteOf(sub)))
 }
@@ -246,6 +269,9 @@ type reviewReq struct {
 	Variant  *int   `json:"variant"`  // choose 时必填(指针区分未携带与 0)
 	Comment  string `json:"comment"`
 }
+
+// maxCommentRunes 批注上限 2000 字(按字符计,非字节);打回必须带非空批注。
+const maxCommentRunes = 2000
 
 func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	var req reviewReq
@@ -261,10 +287,35 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	if req.Variant != nil {
 		chosen = *req.Variant
 	}
-	if err := s.store.SaveReview(req.ID, req.Decision, chosen, req.Comment); err != nil {
+	// 先取提交定状态:已审是终态,409 优先于批注校验(重复裁决哪怕带空批注
+	// 也应报"已审"而非 400);不存在则 404。
+	cur, err := s.store.Get(req.ID)
+	if err != nil {
 		writeErr(w, storeStatus(err), err.Error())
 		return
 	}
+	// 批注规则(票 06):打回去掉首尾空白后必须非空;任何裁决的批注
+	// 上限 2000 字(按字符计,非字节)。校验与落库同用去空白后的文本
+	// (前端同口径先 trim 再计数),只拦待审新请求;旧数据不迁移,
+	// 已落库的空批注打回记录照常展示。批注去首尾空白后落库。
+	comment := strings.TrimSpace(req.Comment)
+	if cur.Status == store.StatusPending {
+		if req.Decision == store.DecisionReject && comment == "" {
+			writeErr(w, http.StatusBadRequest, "打回必须写批注,说明哪里不行、往哪改")
+			return
+		}
+		if utf8.RuneCountInString(comment) > maxCommentRunes {
+			writeErr(w, http.StatusBadRequest, "批注超过 2000 字上限(按字符计)")
+			return
+		}
+	}
+	if err := s.store.SaveReview(req.ID, req.Decision, chosen, comment); err != nil {
+		writeErr(w, storeStatus(err), err.Error())
+		return
+	}
+	// 裁决落库成功:进程内唤醒等待该提交的长轮询(票 09);此刻起等待方
+	// 复查状态必见已审,不会拿到旧值。
+	s.waiters.wake(req.ID)
 	sub, err := s.store.Get(req.ID)
 	if err != nil {
 		writeErr(w, storeStatus(err), err.Error())

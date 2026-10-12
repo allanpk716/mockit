@@ -12,6 +12,8 @@
   --ok:#3fbf72; --bad:#e2564e; --pin:#f5c451;
 }
 *{box-sizing:border-box}
+/* hidden 兜底:作者样式(如 #x{display:flex})优先级高于 UA 的 [hidden]{display:none},会让 hidden 失效 */
+[hidden]{display:none!important}
 html,body{margin:0;padding:0}
 body{
   background:var(--bg); color:var(--text);

@@ -1,15 +1,15 @@
 # mockit
 
-mock 页面审核闭环服务:AI agent 经 MCP 提交 mock 页面(单 HTML 或 zip),用户在手机上全屏对比候选并拍板,agent 取回裁决,全程不出对话。
+mock 页面审核闭环服务:AI agent 经 MCP 提交 mock 页面(单 HTML 或 zip),用户在手机上全屏对比候选并拍板,agent 贴完链接挂起等待、裁决一落即取回,全程不出对话。
 
 Go 单二进制,双模式,零外部依赖(SQLite 驱动已 vendor,离线可构建),任何一台机器放一个 exe + 一行 MCP 配置就能用。
 
 ## 核心闭环(四步)
 
-1. **agent 提交** — agent 调 MCP 工具 `mockit_submit`,提交 1~6 个候选(单 HTML 或 zip,单文件 ≤20MB);
+1. **agent 提交** — agent 调 MCP 工具 `mockit_submit`,提交候选(推荐 3~5 个,上限 1~6;单 HTML 或 zip,单文件 ≤20MB);
 2. **贴地址** — submit 直接返回审核页 URL(主机名自动探测本机 NetBird 网段,或用 `external_url` 指定),agent 贴在对话里,用户手机(同一 NetBird 网络)点开;
-3. **手机拍板** — 用户在列表页点开提交,逐个候选全屏对比,底部投票条裁决(approve / reject / choose+选中的候选),可附批注;
-4. **取结果** — agent 调 `mockit_get_review` 拿到状态/裁决/选中候选/批注,继续干活。
+3. **手机拍板** — 用户在列表页点开提交,候选页全屏对比(底栏圆点切换候选),点「选它/通过」或「打回」弹出底部批注面板裁决(approve / reject / choose+选中的候选);打回必写批注,批注上限 2000 字,写到一半自动存草稿、裁决后清除;
+4. **取裁决** — agent 贴完链接立刻调 `mockit_get_review`(传 `wait` 挂起等待),用户一裁决即拿到状态/裁决/选中候选/批注,继续干活。
 
 ## 快速开始
 
@@ -18,7 +18,7 @@ go build -o mockit.exe .   # 依赖已 vendor,离线可构建
 
 mockit serve      # 模式一:常驻 HTTP server(页面展示、审核记录、自动清理)
 mockit mcp        # 模式二:stdio MCP server(agent 提交/查询的唯一通道)
-mockit version    # 打印版本,当前 0.1.1
+mockit version    # 打印版本,当前 0.2.0
 ```
 
 `mockit serve` 启动后:
@@ -34,6 +34,7 @@ agent 所在机器:  mockit 已装好(用户级 ~/.claude.json,见下节)   # �
 agent:           调 mockit_submit                      # serve 未起时 MCP 自动拉起
 agent → 对话:    把 submit 返回的审核页 URL 贴给用户
 手机:            点开 URL 拍板
+agent:           紧接着 mockit_get_review(id, wait=600)   # 挂起等待,用户一裁决即返回(宿主 60 秒上限则 wait=50 循环)
 ```
 
 `mockit_submit` 返回 id + 审核页 URL + 各候选 URL。URL = 主机名(自动探测本机 NetBird 网段 100.64.0.0/10 唯一命中 IPv4,或配置的 `external_url`)+ `server.lock` 记载的实际端口(端口漂移自动跟随,配置端口永不进入 URL)。探测歧义/零命中且未配置 `external_url` 时,submit 明确报错提示配置(server 与页面本身照常可用),不会默默退化成本机地址。
@@ -68,12 +69,12 @@ agent → 对话:    把 submit 返回的审核页 URL 贴给用户
 
 例外手段:需在项目内钉死版本时,项目根放 `.mcp.json`(`command` 写 mockit 可执行文件的绝对路径),或进 CC Switch 模板(见下节警告)。
 
-MCP 面为行分隔 JSON-RPC 2.0(stdio),支持 initialize / ping / tools/list / tools/call,日志走 stderr(不污染协议通道)。三个工具:
+MCP 面为行分隔 JSON-RPC 2.0(stdio),支持 initialize / ping / tools/list / tools/call,日志走 stderr(不污染协议通道)。工具调用并发处理(长等待不堵 ping 与其他请求),支持 `notifications/cancelled` 中断等待中的调用。三个工具:
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
 | `mockit_submit` | `title`(必填)、`note`(可选)、`variants`(1~6 个,每个 `label` 必填 + `html`(内联)或 `path`(本地 `.html`/`.htm`/`.zip`)二选一) | 提交待审;返回 id、状态、审核页 URL 与各候选 URL |
-| `mockit_get_review` | `id` | 取回状态/裁决/选中候选/批注 |
+| `mockit_get_review` | `id`、`wait`(可选,整数秒 0~600) | 取回状态/裁决/选中候选/批注;传 `wait` 且待审时挂起至裁决或超时,超时返回待审属正常,可再调 |
 | `mockit_list` | `status`(`pending`/`reviewed`,可选)、`limit`(可选) | 提交简列 |
 
 MCP 与 serve 必须同机:MCP 读 `<data>/server.lock` 定位端口并 ping 探活。serve 未起时 **MCP 自动拉起**(两把锁分离协议:启动互斥锁保证并发冷启动只拉一个实例,实例锁由 serve 持有至退出;serve 活但无响应时工具明确报错提示人工处置)。
@@ -104,7 +105,7 @@ release 地址:[github.com/allanpk716/mockit/releases](https://github.com/allanp
 - 本地不想发版只想组装核对:`./scripts/release.sh`(干跑,打印完整 `gh release create` 命令不执行)。
 
 ```bash
-git tag v0.1.1 && git push origin v0.1.1   # CI 接管,出 release
+git tag v0.2.0 && git push origin v0.2.0   # CI 接管,出 release
 ```
 
 ## 配置
@@ -131,15 +132,16 @@ git tag v0.1.1 && git push origin v0.1.1   # CI 接管,出 release
 | `decision_retention_days` | `MOCKIT_DECISION_RETENTION_D` | `90` | 决策记录保留天数(锚点=审核完成时间) |
 | `external_url` | (无环境变量) | 空 | 对外 URL 的主机名,**只接受裸主机名**(域名或 IP 字面量,含 IPv6;带端口或 `http://` 前缀启动即报配置错误);留空=自动探测本机 NetBird 网段(100.64.0.0/10)唯一命中 IPv4,歧义/零命中时 submit 报错提示配置 |
 
-## HTTP 面(手机侧)
+## HTTP 面
 
 | 路由 | 用途 |
 |---|---|
 | `GET /` | 提交列表页 |
 | `GET /s/{id}` | 提交详情页(候选一览、裁决状态) |
-| `GET /s/{id}/v{n}` | 候选全屏对比页,底部悬浮投票条 |
+| `GET /s/{id}/v{n}` | 候选全屏对比页,底栏候选圆点 +「选它/通过」「打回」按钮,点按弹出批注面板 |
 | `GET /raw/{id}/{n}/...` | 候选静态文件(严格防目录穿越) |
-| `POST /api/review` | 提交裁决(approve / reject / choose+variant+comment) |
+| `GET /api/submissions/{id}` | 提交详情 JSON(状态/裁决/批注);可选查询参数 `wait`(整数秒 0~600):待审时挂起至裁决或超时才返回,超时返回的仍是待审,客户端断开即释放等待 |
+| `POST /api/review` | 提交裁决(approve / reject / choose+variant+comment);**打回必须带非空批注**,批注上限 2000 字(按字符计),违反返回 400 |
 | `POST /api/pin` | 切换钉住 |
 | `GET /ping` | 存活探测(返回版本) |
 
@@ -148,7 +150,7 @@ git tag v0.1.1 && git push origin v0.1.1   # CI 接管,出 release
 ## 状态与保留期
 
 - 状态机:`pending`(待审)→ `reviewed`(已审,**终态**);裁决后不可改,重复裁决明确报错(409)。
-- 裁决:`approve` / `reject` / `choose`(choose 必须带候选序号);可附批注。
+- 裁决:`approve` / `reject` / `choose`(choose 必须带候选序号);打回必须带非空批注,通过/选中的批注可选,批注上限 2000 字(按字符计,违反返回 400)。
 - 清理节律:serve **启动立即扫一遍**,之后每 24 小时一扫。
 - 页面文件 14 天(锚点=提交时间):未审超期**整条删**(目录+记录);已审超期只删页面文件,记录留档至决策保留期满,页面显示"已清理"禁用态。
 - 决策记录 90 天(锚点=审核完成时间):到期删记录。
