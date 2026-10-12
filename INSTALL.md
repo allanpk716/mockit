@@ -14,7 +14,7 @@ release 页:<https://github.com/allanpk716/mockit/releases>(四平台二进制 +
 
 ## 安装总览
 
-1. 判平台,下载二进制 → 2. 重命名为统一命令名并落位 → 3. 加入 PATH → 4. 按合并纪律写用户级 MCP 配置 → 5. 装全局技能 → 6. 两级验收。
+1. 判平台，下载二进制 → 2. 重命名为统一命令名并落位 → 3. 加入 PATH → 4. 按合并纪律写用户级 MCP 配置 → 5. 装全局技能（`mockit install-skill`）→ 6. 两级验收。
 
 Windows 的命令用 PowerShell,macOS/Linux 用 bash。安装目录约定:Windows 为 `%LOCALAPPDATA%\mockit`(即 `C:\Users\<用户>\AppData\Local\mockit`);macOS/Linux 为 `~/bin`(推荐,免 sudo)或 `/usr/local/bin`(已在默认 PATH,免做步骤 3)。
 
@@ -172,11 +172,21 @@ python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude.js
 
 结构化读写会把缩进规范为 2 空格,键的内容不变;这是合并的正常形态,与"整文件模板替换"(内容丢失)是两回事。不需要先起 serve——MCP 首次调用工具时会自动拉起本机 serve。
 
-## 步骤 5:安装全局技能
+## 步骤 5：安装全局技能（mockit install-skill）
 
-把 release 附带的技能文件(仓内正本路径 `skills/mockit/SKILL.md`,release 资产名平铺为 `SKILL.md`)放到用户级技能目录,任何项目里的 agent 都会被触发式技能覆盖(用户提出要做 mock 页面、要对比多个候选拍板时,自动按技能工作流提交)。
+运行 `mockit install-skill`，把二进制内嵌的技能正本（仓内路径 `skills/mockit/SKILL.md`，构建时内嵌，与二进制同版本）写入用户级技能目录 `~/.claude/skills/mockit/SKILL.md`（目录不存在则创建，同名文件直接覆盖），任何项目里的 agent 都会被触发式技能覆盖（用户提出要做 mock 页面、要对比多个候选拍板时，自动按技能工作流提交）：
 
-**Windows(PowerShell):**
+```powershell
+# Windows（需已在 PATH，或用步骤 2 的绝对路径：& "$env:LOCALAPPDATA\mockit\mockit.exe" install-skill）
+mockit install-skill
+```
+
+```bash
+# macOS / Linux（需已在 PATH；方案 B 用 /usr/local/bin/mockit install-skill）
+mockit install-skill
+```
+
+命令输出写入后的技能路径即成功。备选（无法运行命令时）：release 附带技能资产（资产名平铺为 `SKILL.md`），手动下载落位：
 
 ```powershell
 Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/allanpk716/mockit/releases/latest/download/SKILL.md' -OutFile .\SKILL.md
@@ -184,10 +194,8 @@ New-Item -ItemType Directory -Force -Path "$HOME\.claude\skills\mockit" | Out-Nu
 Move-Item .\SKILL.md "$HOME\.claude\skills\mockit\SKILL.md" -Force
 ```
 
-**macOS / Linux(bash):**
-
 ```bash
-curl -fL -o SKILL.md https://github.com/allanpk716/mockit/releases/latest/download/SKILL.md   # 或:gh release download --repo allanpk716/mockit --pattern 'SKILL.md' --dir .
+curl -fL -o SKILL.md https://github.com/allanpk716/mockit/releases/latest/download/SKILL.md   # 或：gh release download --repo allanpk716/mockit --pattern 'SKILL.md' --dir .
 mkdir -p "$HOME/.claude/skills/mockit"   # 目录不存在则建
 mv SKILL.md "$HOME/.claude/skills/mockit/SKILL.md"
 ```
@@ -216,7 +224,7 @@ if [ "$V" = "${TAG#v}" ]; then echo "版本对齐:$TAG"; else echo "版本不符
 
 **最终验收:重启 Claude Code 进程**——退出整个 Claude Code 进程再启动,**仅开新会话不够**(旧进程不会重读 PATH、`~/.claude.json` 与技能目录)。本次重启同时使三样东西生效:PATH、MCP 配置、技能。新会话中:
 
-1. 工具列表出现 `mockit_submit` / `mockit_get_review` / `mockit_list` 三个工具,即接入成功。
+1. 工具列表出现 `mockit_submit` / `mockit_get_review` / `mockit_list` / `mockit_upgrade` 四个工具，即接入成功。
 2. 可选冒烟:提交一条最小提交(如 title=「mockit 安装冒烟」,1 个候选,`html` 内联任意极小页面),拿到 id 与审核页 URL 即通过;不要求用户裁决,放着 14 天自动清理。首次调用会自动拉起 serve,多花几秒属正常。
 
 日常使用:接入方 agent 参考 release 附带的 AGENT-GUIDE.md(工作流、错误应对);技能会在用户要做 mock 页面时自动触发。
@@ -231,8 +239,15 @@ if [ "$V" = "${TAG#v}" ]; then echo "版本对齐:$TAG"; else echo "版本不符
 | MCP 报"启动中退出,可手工运行 mockit serve 查看报错" | 自动拉起的 serve 因配置等问题退出。手工开一个终端运行 `mockit serve` 看具体报错(常见:external_url 带了端口或前缀)。 |
 | 看 serve 实际端口 / 运行状态 | 实际端口与 PID 在 `~/.mockit/server.lock`;日志在 `~/.mockit/logs/serve.log`(同时回显 stderr)。 |
 | Windows 重启 Claude Code 后仍找不到 `mockit` 命令 | PATH 写的是用户级持久值,只对新进程生效。先开**新终端**跑 `mockit version` 确认;仍不行则检查步骤 3 是否写入成功;兜底可把 `~/.claude.json` 里 `mcpServers.mockit.command` 改为二进制绝对路径(同样可用)。 |
-| `gh` 未安装或未登录 | 全部步骤都有 curl / Invoke-WebRequest 直链取法(见各步"取法二");最新 tag 从 <https://github.com/allanpk716/mockit/releases/latest> 重定向页查看。 |
+| `gh` 未安装或未登录 | 全部步骤都有 curl / Invoke-WebRequest 直链取法（见各步“取法二”）；最新 tag 从 <https://github.com/allanpk716/mockit/releases/latest> 重定向页查看。 |
+| 升级报“SHA256 校验不一致…已中止，原文件未动” | 下载损坏或被篡改，升级已安全中止、旧文件未动。稍后重试；反复失败按「重装 / 升级」手动走步骤 1~6。 |
+| 升级报“无法在安装目录 … 创建临时文件”（如 `/usr/local/bin` 无写权限） | mockit 不提权、也不改装到别处。按报错里给出的手动命令下载替换（或手动走步骤 1~6）。 |
+| 升级报“另一升级进行中” | 另一处触发的升级正在替换文件（数据目录下的升级锁被占用）。等它完成后再触发一次即可。 |
+| 工具结果末尾附“本会话 MCP 版本（…）旧于 serve（…）” | 升级后旧 Claude Code 进程的正常现象：磁盘二进制与 serve 已是新版，本会话 MCP 仍是旧代码，审核闭环照常可用。按提示完全退出并重启 Claude Code 后对齐。 |
 
 ## 重装 / 升级
 
-重复执行步骤 1~6 即可,各步幂等:重命名覆盖旧文件、PATH 判重不重复追加、配置只更新 `mockit` 一个键、技能覆盖同名文件;最后照旧重启 Claude Code 进程。
+- **已是 0.3.0 及以后**：不用再手动走步骤。让 agent 调 MCP 工具 `mockit_upgrade`，或本机运行 `mockit upgrade`——从 GitHub release 下载对应平台二进制，SHA256 校验通过后替换，并写入配套技能；升级报告会列出旧→新版本、二进制路径、技能路径与 MCP 配置检查结果。完成后**完全退出并重启 Claude Code**（只开新会话不够）；正在运行的 serve 不受影响。已是最新时只回“已是最新 vX”，什么都不改。
+  - 只看版本：`mockit upgrade --check` 或 `mockit_upgrade` 带 `check_only: true`；
+  - 指定版本（含降级回滚）：`mockit upgrade --version vX.Y.Z` 或 `mockit_upgrade` 带 `version`。
+- **0.2.0 及更早版本**：没有升级能力，先按上面步骤 1~6 手动升级一次到 0.3.0（各步幂等：重命名覆盖旧文件、PATH 判重不重复追加、配置只更新 `mockit` 一个键、技能覆盖同名文件），之后即可用 `mockit upgrade` / `mockit_upgrade` 升级。

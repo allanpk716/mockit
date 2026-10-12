@@ -6,7 +6,7 @@
 # 产物只落 dist/(已 gitignore,不入库)。
 #
 # 用法:
-#   ./scripts/release.sh                 # 目标 tag 默认 v0.2.0
+#   ./scripts/release.sh                 # 目标 tag 默认 v0.3.0
 #   TAG=v0.1.2 ./scripts/release.sh      # 覆盖目标 tag(内嵌版本须与之对齐,否则出厂检查拒绝)
 #
 set -euo pipefail
@@ -18,7 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-TAG="${TAG:-v0.2.0}"
+TAG="${TAG:-v0.3.0}"
 # tag 格式守门(防误传导致后续路径操作出格)
 [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "TAG 需形如 v0.1.1,当前为 \"${TAG}\""
 EXPECTED_VERSION="${TAG#v}"   # tag v0.1.1 ↔ 内嵌版本 0.1.1

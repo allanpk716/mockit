@@ -6,6 +6,7 @@ package lifecycle
 // 计,同进程内两个句柄互相冲突,无需再拉子进程)。
 
 import (
+	"path/filepath"
 	"errors"
 	"net"
 	"net/http"
@@ -222,6 +223,30 @@ func TestStartLockMutualExclusion(t *testing.T) {
 		t.Fatalf("释放后应可再取: %v", err)
 	}
 	g2.Release()
+}
+
+// TryExclusiveLock(规格 #11 升级互斥等复用):非阻塞,锁被他持立即失败;
+// 释放后可再取;锁文件常驻(同 start.lock 纪律)。
+func TestTryExclusiveLockNonBlocking(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "upgrade.lock")
+	g, err := TryExclusiveLock(p)
+	if err != nil {
+		t.Fatalf("首次获取失败: %v", err)
+	}
+	_, err = TryExclusiveLock(p)
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("他持时应立即报 ErrLocked, got: %v", err)
+	}
+	g.Release()
+	g2, err := TryExclusiveLock(p)
+	if err != nil {
+		t.Fatalf("释放后应可再取: %v", err)
+	}
+	g2.Release()
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("锁文件应常驻: %v", err)
+	}
 }
 
 // start.lock 文件常驻(空文件作锁载体,Release 只释放锁不删文件)。

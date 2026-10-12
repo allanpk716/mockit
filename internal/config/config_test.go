@@ -138,6 +138,40 @@ func TestLoadFromFilePartialOnlyOverridesPresentKeys(t *testing.T) {
 	}
 }
 
+// 票 #16:update_check 默认 true;配置文件可关(false 时不做后台新版
+// 检查、不提醒);未写的键保持默认。
+func TestLoadUpdateCheck(t *testing.T) {
+	setTestHome(t)
+
+	c, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load 报错: %v", err)
+	}
+	if !c.UpdateCheck {
+		t.Errorf("默认 update_check 应为 true, got %+v", c)
+	}
+
+	home := setTestHome(t)
+	writeTestConfig(t, home, `{"update_check": false}`)
+	c, err = Load(nil)
+	if err != nil {
+		t.Fatalf("Load 报错: %v", err)
+	}
+	if c.UpdateCheck {
+		t.Errorf("update_check=false 应加载为 false")
+	}
+
+	home = setTestHome(t)
+	writeTestConfig(t, home, `{"update_check": true, "port": 9000}`)
+	c, err = Load(nil)
+	if err != nil {
+		t.Fatalf("Load 报错: %v", err)
+	}
+	if !c.UpdateCheck || c.Port != 9000 {
+		t.Errorf("update_check=true 且未写的键不受影响: %+v", c)
+	}
+}
+
 func TestLoadEnvOverridesFile(t *testing.T) {
 	home := setTestHome(t)
 	writeTestConfig(t, home, `{

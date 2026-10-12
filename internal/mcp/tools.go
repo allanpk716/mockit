@@ -1,6 +1,7 @@
 package mcp
 
-// 三工具(mockit_submit / mockit_get_review / mockit_list)与 serve 定位。
+// 四工具(mockit_submit / mockit_get_review / mockit_list /
+// mockit_upgrade)与 serve 定位;mockit_upgrade 实现在 upgrade_tool.go。
 //
 // URL 红线(F1 由 D16 取代后的现行口径,票 09):
 //   - submit 成功输出对外 URL:http:// + lock.base_host + : + 实例锁实际
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	"mockit/internal/lifecycle"
+	"mockit/internal/upgrade"
 )
 
 // maxFileBytes 单候选文件上限(spec 内容管道:单文件 ≤20MB)。
@@ -124,6 +126,17 @@ func toolDefs() []toolDef {
 				},
 			},
 		},
+		{
+			Name:        "mockit_upgrade",
+			Description: "升级 mockit 或查看升级版本:check_only=true 只查当前/最新版本不安装;默认执行完整升级(可用 version 指定目标版本 vX.Y.Z,含降级)。仅在用户明确要求升级或查看升级版本时调用,勿自发升级。",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"version":    map[string]any{"type": "string", "description": "目标版本 vX.Y.Z(可选;省略升到最新;降级须显式指定)"},
+					"check_only": map[string]any{"type": "boolean", "description": "只查询当前/最新版本,不安装(可选)"},
+				},
+			},
+		},
 	}
 }
 
@@ -140,8 +153,10 @@ func (s *server) callTool(ctx context.Context, name string, rawArgs json.RawMess
 		return s.toolGetReview(ctx, rawArgs)
 	case "mockit_list":
 		return s.toolList(ctx, rawArgs)
+	case "mockit_upgrade":
+		return s.toolUpgrade(ctx, rawArgs)
 	default:
-		return fmt.Sprintf("未知工具 %q(可用:mockit_submit / mockit_get_review / mockit_list)", name), true
+		return fmt.Sprintf("未知工具 %q(可用:mockit_submit / mockit_get_review / mockit_list / mockit_upgrade)", name), true
 	}
 }
 
@@ -157,6 +172,13 @@ func (s *server) resolveLock() (*lifecycle.Lock, error) {
 	if err != nil {
 		s.logf("定位/拉起 serve 失败: %v", err)
 		return nil, errors.New(errText(err))
+	}
+	// ADR 0001/票 13:serve 比本 MCP 新时直接复用,但在本进程的工具结果
+	// 末尾提示一次"请重启 Claude Code"(每进程一次)。
+	if sv, ok := upgrade.ParseSemver(lk.Version); ok {
+		if mv, ok2 := upgrade.ParseSemver(Version); ok2 && sv.Cmp(mv) > 0 {
+			s.notices.add(noticeKindServeNewer, serveNewerNotice(Version, lk.Version))
+		}
 	}
 	return lk, nil
 }

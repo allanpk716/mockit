@@ -1,0 +1,319 @@
+// 升级能力的"检查最新版本"入口(票 #14,包级说明见 skill.go):
+// 从 release 基地址取最新 tag,与当前版本按 semver 比较,结果缓存于
+// 数据目录(24 小时有效)。它也是之后 MCP 新版提醒的数据来源。
+
+package upgrade
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// DefaultBaseURL 是生产环境的 release 基地址(GitHub)。
+const DefaultBaseURL = "https://github.com/allanpk716/mockit/releases"
+
+// baseURLEnv 是覆盖 release 基地址的隐藏环境变量,仅用于验收和调试。
+const baseURLEnv = "MOCKIT_RELEASE_BASE"
+
+// checkTTL 是检查结果的默认缓存有效期。
+const checkTTL = 24 * time.Hour
+
+// httpTimeout 是取最新 tag 的 HTTP 超时。
+const httpTimeout = 15 * time.Second
+
+// State 是检查结果的状态。
+type State string
+
+const (
+	StateUpgradable State = "upgradable" // 最新 release 高于当前版本,可升级
+	StateLatest     State = "latest"     // 已是最新
+	StateDev        State = "dev"        // 开发版:当前版本解析不了或高于最新 release;不提醒
+	StateFailed     State = "failed"     // 检查失败(网络 / HTTP / 响应异常)
+)
+
+// Result 是一次"检查最新版本"的结果;失败也作为结果返回,不 panic。
+type Result struct {
+	Current  string // 当前版本(原样)
+	Latest   string // 最新 release 的 tag(如 v0.3.0;失败时为空)
+	State    State
+	Err      string // State == failed 时的原因
+	CacheHit bool   // 是否命中有效期内的缓存(未发网络请求)
+}
+
+// String 给出人读的一行式报告(CLI `mockit upgrade --check` 直接打印)。
+func (r Result) String() string {
+	cur := dispVersion(r.Current)
+	switch r.State {
+	case StateFailed:
+		return fmt.Sprintf("当前版本: %s\n检查最新版本失败: %s", cur, r.Err)
+	case StateDev:
+		return fmt.Sprintf("当前版本: %s\n最新版本: %s\n可升级: 否(开发版:当前版本解析不了或高于最新 release,不提醒)",
+			cur, dispVersion(r.Latest))
+	case StateLatest:
+		return fmt.Sprintf("当前版本: %s\n最新版本: %s\n可升级: 否(已是最新)", cur, dispVersion(r.Latest))
+	default: // StateUpgradable
+		return fmt.Sprintf("当前版本: %s\n最新版本: %s\n可升级: 是(%s → %s)",
+			cur, dispVersion(r.Latest), cur, dispVersion(r.Latest))
+	}
+}
+
+// Checker 检查最新版本;依赖全部经字段注入。
+type Checker struct {
+	BaseURL string        // release 基地址,如 https://github.com/allanpk716/mockit/releases
+	DataDir string        // 数据目录,检查缓存写在其下
+	Current string        // 当前版本(如 0.2.0)
+	TTL     time.Duration // 缓存有效期,零值用默认 24 小时
+	Client  *http.Client  // 可选注入;默认遵守代理环境变量
+}
+
+// NewChecker 用生产默认值构造:GitHub 基地址(可被隐藏环境变量
+// MOCKIT_RELEASE_BASE 覆盖),缓存放 dataDir。
+func NewChecker(dataDir, current string) *Checker {
+	return &Checker{BaseURL: defaultBaseURL(), DataDir: dataDir, Current: current}
+}
+
+// defaultBaseURL 返回生效的 release 基地址:隐藏环境变量优先,仅用于验收和调试。
+func defaultBaseURL() string {
+	if v := os.Getenv(baseURLEnv); v != "" {
+		return v
+	}
+	return DefaultBaseURL
+}
+
+// cacheFile 是缓存文件路径。
+func (c *Checker) cacheFile() string { return filepath.Join(c.DataDir, "update-check.json") }
+
+// ttl 返回生效的缓存有效期。
+func (c *Checker) ttl() time.Duration {
+	if c.TTL > 0 {
+		return c.TTL
+	}
+	return checkTTL
+}
+
+// client 返回生效的 HTTP 客户端。
+func (c *Checker) client() *http.Client {
+	if c.Client != nil {
+		return c.Client
+	}
+	return &http.Client{
+		Timeout: httpTimeout,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment, // 遵守 HTTP(S)_PROXY / NO_PROXY
+		},
+	}
+}
+
+// checkCache 是缓存文件的内容。失败时间与原因另记(FailedAt/FailErr),
+// 与最近一次成功结果(Latest/CheckedAt)并存:失败不覆盖好结果(票 #14)。
+type checkCache struct {
+	Latest    string    `json:"latest"`              // 最近一次成功取得的最新 tag(失败后保留)
+	CheckedAt time.Time `json:"checked_at"`          // Latest 的取得时间
+	FailedAt  time.Time `json:"failed_at,omitempty"` // 最近一次检查失败的时间(零值 = 无)
+	FailErr   string    `json:"fail_err,omitempty"`  // 最近一次检查失败的原因
+}
+
+// failureReason 返回缓存里的失败原因(空则给兑底文案)。
+func (cc checkCache) failureReason() string {
+	if cc.FailErr != "" {
+		return cc.FailErr
+	}
+	return "上次检查失败(原因未记录)"
+}
+
+// Check 检查最新版本。force 为真时跳过缓存强制刷新(--check 走强制);
+// 网络 / HTTP / 响应异常作为 StateFailed 的结果返回,并写入一条带时间
+// 戳的失败缓存(24 小时内后台检查不重试;另记失败时间与原因,不覆盖
+// 已有的最近成功结果)。
+func (c *Checker) Check(ctx context.Context, force bool) Result {
+	res := Result{Current: c.Current}
+
+	var latest string
+	if !force {
+		if cc, ok := c.readCache(); ok {
+			if cc.Latest == "" { // 失败缓存命中:24 小时内不重试
+				return Result{Current: c.Current, State: StateFailed, Err: cc.failureReason(), CacheHit: true}
+			}
+			latest = cc.Latest
+			res.CacheHit = true
+		}
+	}
+	if latest == "" {
+		tag, err := c.fetchLatest(ctx)
+		if err != nil {
+			res.State = StateFailed
+			res.Err = err.Error()
+			c.writeFailedCache(err.Error())
+			return res
+		}
+		latest = tag
+		c.writeCache(checkCache{Latest: latest, CheckedAt: time.Now()})
+	}
+	res.Latest = latest
+
+	cur, curOK := ParseSemver(c.Current)
+	lat, latOK := ParseSemver(latest)
+	switch {
+	case !curOK || !latOK || cur.Cmp(lat) > 0:
+		res.State = StateDev
+	case cur.Cmp(lat) == 0:
+		res.State = StateLatest
+	default:
+		res.State = StateUpgradable
+	}
+	return res
+}
+
+// readCache 读有效期内且内容可解析的缓存;否则视为没有缓存。成功结果
+// 优先于失败结果(两者都新鲜时回好结果,坏结果不覆盖好结果);命中
+// 失败缓存时返回的 Latest 为空,由调用方按失败处理。
+func (c *Checker) readCache() (checkCache, bool) {
+	cc, ok := c.readCacheRaw()
+	if !ok {
+		return checkCache{}, false
+	}
+	if _, ok := ParseSemver(cc.Latest); ok && time.Since(cc.CheckedAt) <= c.ttl() {
+		return cc, true
+	}
+	if !cc.FailedAt.IsZero() && time.Since(cc.FailedAt) <= c.ttl() {
+		return checkCache{FailedAt: cc.FailedAt, FailErr: cc.FailErr}, true
+	}
+	return checkCache{}, false
+}
+
+// readCacheRaw 读缓存文件并解析,不判有效期。
+func (c *Checker) readCacheRaw() (checkCache, bool) {
+	b, err := os.ReadFile(c.cacheFile())
+	if err != nil {
+		return checkCache{}, false
+	}
+	var cc checkCache
+	if err := json.Unmarshal(b, &cc); err != nil {
+		return checkCache{}, false
+	}
+	return cc, true
+}
+
+// writeCache 写缓存;尽力而为,失败不影响检查结果。
+func (c *Checker) writeCache(cc checkCache) {
+	if err := os.MkdirAll(c.DataDir, 0o755); err != nil {
+		return
+	}
+	b, err := json.Marshal(cc)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(c.cacheFile(), b, 0o644)
+}
+
+// writeFailedCache 把检查失败写入缓存:失败时间与原因另记,保留文件里
+// 已有的最近成功结果(审查 S1:离线时 24 小时内不重试,好结果不被抹掉)。
+func (c *Checker) writeFailedCache(reason string) {
+	cc, _ := c.readCacheRaw() // 读不到就从头记(零值亦可)
+	cc.FailedAt = time.Now()
+	cc.FailErr = reason
+	c.writeCache(cc)
+}
+
+// fetchLatest 从 release 基地址取最新 tag:GET <base>/latest 跟随重定向,
+// 最终 URL 形如 .../tag/vX.Y.Z。
+func (c *Checker) fetchLatest(ctx context.Context) (string, error) {
+	if c.BaseURL == "" {
+		return "", fmt.Errorf("未配置 release 基地址")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(c.BaseURL, "/")+"/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	if resp.Request == nil || resp.Request.URL == nil {
+		return "", fmt.Errorf("响应缺少最终地址")
+	}
+	tag, ok := tagFromPath(resp.Request.URL.Path)
+	if !ok {
+		return "", fmt.Errorf("最终地址里没有版本 tag(得 %q)", resp.Request.URL.Path)
+	}
+	if _, ok := ParseSemver(tag); !ok {
+		return "", fmt.Errorf("tag %q 不是 vX.Y.Z 形式", tag)
+	}
+	return tag, nil
+}
+
+// tagFromPath 从形如 .../releases/tag/v0.3.0 的路径里取 tag。
+func tagFromPath(p string) (string, bool) {
+	i := strings.LastIndex(p, "/tag/")
+	if i < 0 {
+		return "", false
+	}
+	tag := p[i+len("/tag/"):]
+	if tag == "" || strings.Contains(tag, "/") {
+		return "", false
+	}
+	return tag, true
+}
+
+// Semver 是解析后的语义化版本(仅 vX.Y.Z;发布契约不含预发布段)。
+// 全仓唯一一份解析/比较实现:internal/mcp 的 serve 版本判定也用它
+// (审查 T3,原两份实现严格度不一致)。
+type Semver struct {
+	major, minor, patch int
+}
+
+// ParseSemver 解析 vX.Y.Z 或 X.Y.Z(允许首尾空白);解析不了第二个
+// 返回值为假。三段须为纯数字(不认 "+1"、后缀、缺段等)。
+func ParseSemver(s string) (Semver, bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
+	parts := strings.Split(s, ".")
+	if len(parts) != 3 {
+		return Semver{}, false
+	}
+	var v Semver
+	for i, part := range parts {
+		if part == "" || strings.TrimLeft(part, "0123456789") != "" {
+			return Semver{}, false
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return Semver{}, false
+		}
+		switch i {
+		case 0:
+			v.major = n
+		case 1:
+			v.minor = n
+		case 2:
+			v.patch = n
+		}
+	}
+	return v, true
+}
+
+// Cmp 按 semver 比较:-1 小于、0 相等、1 大于。
+func (v Semver) Cmp(o Semver) int {
+	for _, p := range [3][2]int{{v.major, o.major}, {v.minor, o.minor}, {v.patch, o.patch}} {
+		switch {
+		case p[0] < p[1]:
+			return -1
+		case p[0] > p[1]:
+			return 1
+		}
+	}
+	return 0
+}
+
+// dispVersion 去掉展示用的 v 前缀。
+func dispVersion(s string) string { return strings.TrimPrefix(s, "v") }

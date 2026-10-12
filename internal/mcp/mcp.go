@@ -21,10 +21,11 @@ import (
 
 	"mockit/internal/config"
 	"mockit/internal/lifecycle"
+	"mockit/internal/upgrade"
 )
 
 // Version 与 main 包的 Version 常量保持同步(main 不可导入,此处复制;改动需两处同改)。
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 // defaultProtocolVersion 是客户端 initialize 未携带 protocolVersion 时的回显缺省值。
 const defaultProtocolVersion = "2024-11-05"
@@ -48,6 +49,19 @@ type server struct {
 	ensure func() (*lifecycle.Lock, error)
 
 	httpc *http.Client
+
+	// notices 每进程一次的附加提示(票 13/ADR 0001):工具结果末尾追加,
+	// 每类(kind)每进程至多附一次;#11 的新版提醒复用此机制。
+	notices *noticeBoard
+
+	// updeps 是 mockit_upgrade 工具与后台新版检查的依赖(票 #16);nil 时
+	// 工具报未配置、后台检查不进行。生产由 Run 构造,测试注入假 release。
+	updeps *upgradeDeps
+
+	// updateState 是后台新版检查的进程内状态(在飞/已升级标记,票 #16);
+	// onCheckDone 是每次后台检查收尾的回调,仅为测试同步用,生产为 nil。
+	updateState updateCheck
+	onCheckDone func(upgrade.Result)
 
 	// 并发与串行化(规格 #4 票 08):工具调用各自在 goroutine 里执行,
 	// stdout 响应经 writeMu 串行化(一行一条完整 JSON,不交错);
@@ -87,7 +101,9 @@ func Run(cfg *config.Config) int {
 		ensure: func() (*lifecycle.Lock, error) {
 			return ensureServer(cfg, defaultSpawnServe)
 		},
-		httpc: &http.Client{Timeout: 60 * time.Second},
+		httpc:   &http.Client{Timeout: 60 * time.Second},
+		notices: newNoticeBoard(),
+		updeps:  prodUpgradeDeps(cfg),
 	}
 	s.logf("mockit mcp %s 就绪(dataDir=%q)", Version, cfg.DataDir)
 	return s.loop(os.Stdin)
@@ -234,6 +250,12 @@ func (s *server) handleToolCall(id json.RawMessage, params json.RawMessage) {
 		s.reply(id, nil, &rpcError{Code: codeInvalidParams, Message: "tools/call 缺少 name 或参数非法"})
 		return
 	}
+	// 后台新版检查(票 #16):在处理点同步判活、异步执行,不阻塞本次
+	// 调用;mockit_upgrade 自身即查询/升级入口,不另起后台检查,避免
+	// 同请求并发重复查与升完又提醒。
+	if p.Name != "mockit_upgrade" {
+		s.maybeCheckUpdate()
+	}
 	// 规格 #4 票 08:工具调用在独立 goroutine 里执行,慢调用不再堵住读循环
 	// (ping / notifications/cancelled 随时可进);响应经 reply 串行写出,
 	// 完成顺序允许与请求顺序不同(JSON-RPC 按 id 对账)。ctx 挂进在飞表,
@@ -267,8 +289,14 @@ func (s *server) handleToolCall(id json.RawMessage, params json.RawMessage) {
 		}
 		s.mu.Unlock()
 		if suppress {
-			// MCP 规范:已取消的请求不再回复(通知本身也无回应)。
+			// MCP 规范:已取消的请求不再回复(通知本身也无回应)。提示不
+			// 消耗——留给下一个真正发出的结果(票 13)。
 			return
+		}
+		// 每进程一次的附加提示只随真正发出的结果消耗(票 13):取消/被顶替
+		// 的调用不携带,下一个发出的工具结果末尾再附。
+		if suffix := s.notices.flush(); suffix != "" {
+			text += suffix
 		}
 		s.reply(id, toolCallResult{
 			Content: []toolContent{{Type: "text", Text: text}},

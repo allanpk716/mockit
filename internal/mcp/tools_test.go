@@ -482,3 +482,53 @@ func TestSubmitURLPortFollowsLock(t *testing.T) {
 		t.Fatalf("漂移后不得再出现旧端口:\n%s", text)
 	}
 }
+
+// ADR 0001/票 13:ensure 定位到比自己新的 serve 时,下一个工具结果末尾应
+// 附一次"MCP 旧于 serve,请重启 Claude Code"提示;同一进程后续结果不再附。
+// 走完整 tools/call 往返(提示在应答点追加,取消的调用不消耗提示)。
+func TestNewerServeHintAppendedOnce(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	defer backend.Close()
+	s, out, _ := newTestSrv(t, backend.URL)
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
+	newer := "9.9.9"
+	s.ensure = func() (*lifecycle.Lock, error) {
+		return &lifecycle.Lock{Port: port, PID: os.Getpid(), Version: newer, Token: "t", BaseHost: "phone.test"}, nil
+	}
+	callLine := func(id int) string {
+		return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"mockit_list","arguments":{}}}`+"\n", id)
+	}
+	// 两次调用串行跑(各自走完整 loop 往返):并发时提示会落到任意一个
+	// 先应答的结果上,与"下一个工具结果"的验收口径不一致。
+	toolCallText := func(id int) string {
+		t.Helper()
+		if code := s.loop(strings.NewReader(callLine(id))); code != 0 {
+			t.Fatalf("loop 退出码 = %d, want 0", code)
+		}
+		envs := outLines(t, out)
+		if len(envs) == 0 {
+			t.Fatal("无响应")
+		}
+		res := wantNoErrorResp(t, envs[len(envs)-1]) // 本次 loop 新增的响应
+		content, _ := res["content"].([]any)
+		if len(content) != 1 {
+			t.Fatalf("结果 content 数 = %d, want 1", len(content))
+		}
+		c, _ := content[0].(map[string]any)
+		text, _ := c["text"].(string)
+		return text
+	}
+
+	first := toolCallText(1)
+	for _, want := range []string{"旧于 serve", newer, "请完全退出并重启 Claude Code"} {
+		if !strings.Contains(first, want) {
+			t.Fatalf("首个工具结果应附重启提示(缺 %q):\n%s", want, first)
+		}
+	}
+	second := toolCallText(2)
+	if strings.Contains(second, "请完全退出并重启") {
+		t.Fatalf("提示每进程只应附一次,第二个结果不得再附:\n%s", second)
+	}
+}

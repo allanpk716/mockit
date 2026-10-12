@@ -2,8 +2,9 @@ package mcp
 
 // ensure-server:定位或拉起本机 mockit serve(锁分离协议 D17,票 08)。
 //
-// 流程:读 server.lock → 活持有 ping 通:版本一致复用 / 不一致带 token
-// 停旧并等确认退出后才清残骸(停旧失败不清理活持有)→ 冷启动:取
+// 流程:读 server.lock → 活持有 ping 通:可用(同版本,或 ADR 0001 下
+// 更新的 serve)即复用 / 否则带 token 停旧并等确认退出后才清残骸(停旧
+// 失败不清理活持有)→ 冷启动:取
 // start.lock(超时改锁外轮询等就绪)→ 复查 → spawn serve(零闪窗)→
 // 等实例锁就绪 → 释放 start.lock。serve 活但 ping 不通 → 报错提示人工
 // 处置(F9);超时按被拉起进程死活分别处理。
@@ -67,7 +68,8 @@ func ensureServer(cfg *config.Config, spawn spawnFunc) (*lifecycle.Lock, error) 
 		if !p.Alive {
 			return nil, errors.New(f9Hint)
 		}
-		if p.Rec.Version == Version {
+		// ADR 0001:只替换比自己旧的 serve;更新的 serve 直接复用。
+		if serveUsable(p.Rec.Version) {
 			return p.Rec, nil
 		}
 		if err := stopOldServe(cfg, p); err != nil {
@@ -154,7 +156,7 @@ func coldStart(cfg *config.Config, spawn spawnFunc) (*lifecycle.Lock, error) {
 	if err != nil {
 		// 取锁超时:另一拉起者在临界区,锁外轮询等它把 serve 带起来(F10)。
 		if lk, ok := waitReady(cfg.DataDir, ensureReadyTimeout); ok {
-			if lk.Version == Version {
+			if serveUsable(lk.Version) {
 				return lk, nil
 			}
 			return nil, fmt.Errorf("另一 serve 已就绪但版本不符(%s ≠ %s),请人工处置", lk.Version, Version)
@@ -170,7 +172,7 @@ func coldStart(cfg *config.Config, spawn spawnFunc) (*lifecycle.Lock, error) {
 	}
 	if p.Exists {
 		switch {
-		case p.LiveHeld() && p.Alive && p.Rec.Version == Version:
+		case p.LiveHeld() && p.Alive && serveUsable(p.Rec.Version):
 			return p.Rec, nil
 		case p.LiveHeld() && p.Alive:
 			if err := stopOldServe(cfg, p); err != nil {
@@ -197,7 +199,7 @@ func coldStart(cfg *config.Config, spawn spawnFunc) (*lifecycle.Lock, error) {
 	for {
 		if child.Exited() {
 			// 进程死:复查一次——期间若有别的 serve 就绪则复用,否则清残骸报错。
-			if lk, ok := waitReady(cfg.DataDir, ensurePollInterval); ok && lk.Version == Version {
+			if lk, ok := waitReady(cfg.DataDir, ensurePollInterval); ok && serveUsable(lk.Version) {
 				return lk, nil
 			}
 			if p2, perr := lifecycle.ProbeLock(cfg.DataDir); perr == nil && p2.DeadResidue() {
@@ -207,7 +209,9 @@ func coldStart(cfg *config.Config, spawn spawnFunc) (*lifecycle.Lock, error) {
 		}
 		p, err := lifecycle.ProbeLock(cfg.DataDir)
 		if err == nil && p.Exists && p.LiveHeld() && p.Alive && p.Rec != nil {
-			if p.Rec.Version == Version {
+			// ADR 0001:自己拉起的 serve 报了更高版本(磁盘二进制已被升级)
+			// 也视为可用,不再报"版本异常"。
+			if serveUsable(p.Rec.Version) {
 				return p.Rec, nil
 			}
 			return nil, fmt.Errorf("拉起的 serve 版本异常(%s ≠ %s),请人工处置", p.Rec.Version, Version)

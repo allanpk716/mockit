@@ -21,6 +21,7 @@ type Config struct {
 	ExternalURL        string // 对外通告基址;仅裸主机名(域名或 IP 字面量,含 IPv6),serve 启动前置校验(票 09/D16)
 	PageRetentionDays  int    // 页面文件保留期,默认 14(锚点=提交时间)
 	DecisionRetentionD int    // 决策记录保留期,默认 90(锚点=审核完成时间)
+	UpdateCheck        bool   // 新版检查开关(票 #16),默认 true;false 时 MCP 不做后台检查、不发新版提醒(mockit_upgrade 仍可手动用)
 }
 
 // fileConfig 是 config.json 的键,与 Config 字段一一对应。
@@ -32,6 +33,7 @@ type fileConfig struct {
 	PageRetentionDays     *int    `json:"page_retention_days"`
 	DecisionRetentionDays *int    `json:"decision_retention_days"`
 	ExternalURL           *string `json:"external_url"`
+	UpdateCheck           *bool   `json:"update_check"`
 }
 
 // envOverride 把单个环境变量应用到配置;空值视为未设置。
@@ -77,6 +79,9 @@ func Load(flags []string) (*Config, error) {
 		}
 		if fc.ExternalURL != nil {
 			cfg.ExternalURL = *fc.ExternalURL // 原样透传;语义校验在 serve 启动前置执行(票 09/D16)
+		}
+		if fc.UpdateCheck != nil {
+			cfg.UpdateCheck = *fc.UpdateCheck
 		}
 	case os.IsNotExist(err):
 		// 没有配置文件,直接用默认值。
@@ -142,6 +147,7 @@ func Default() *Config {
 		ExternalURL:        "",
 		PageRetentionDays:  14,
 		DecisionRetentionD: 90,
+		UpdateCheck:        true,
 	}
 }
 
