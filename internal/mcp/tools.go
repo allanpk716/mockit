@@ -127,7 +127,7 @@ func toolDefs() []toolDef {
 		},
 		{
 			Name:        "mockit_upgrade",
-			Description: "升级或查看 mockit 版本:check_only=true 只查当前/最新版本不安装;默认执行完整升级(可用 version 指定目标版本 vX.Y.Z,含降级)。仅在用户明确要求升级或查看版本时调用,勿自发升级。",
+			Description: "升级 mockit 或查看升级版本:check_only=true 只查当前/最新版本不安装;默认执行完整升级(可用 version 指定目标版本 vX.Y.Z,含降级)。仅在用户明确要求升级或查看升级版本时调用,勿自发升级。",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

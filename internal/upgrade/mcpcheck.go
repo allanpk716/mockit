@@ -82,7 +82,7 @@ func CheckMCPConfig(cfgPath, exePath string) MCPCheck {
 		mc.Hint = repairHint(cfgPath, "mcpServers 下没有 mockit 键")
 		return mc
 	}
-	if argsMCP(e.Args) && (e.Command == "mockit" || samePath(e.Command, exePath)) {
+	if argsMCP(e.Args) && (bareCommandOK(e.Command) || samePath(e.Command, exePath)) {
 		mc.State = MCPOk
 		return mc
 	}
@@ -99,6 +99,15 @@ func repairHint(cfgPath, cause string) string {
 // argsMCP 判断 args 是否恰为 ["mcp"]。
 func argsMCP(args []string) bool {
 	return len(args) == 1 && args[0] == "mcp"
+}
+
+// bareCommandOK 判断 command 是否裸命令形式:mockit,或 Windows 上的
+// mockit.exe(不带路径;Windows 文件名不区分大小写)。
+func bareCommandOK(cmd string) bool {
+	if cmd == "mockit" {
+		return true
+	}
+	return runtime.GOOS == "windows" && strings.EqualFold(cmd, "mockit.exe")
 }
 
 // samePath 判断两个路径是否同一(清理分隔符;Windows 上不区分大小写)。

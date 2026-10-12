@@ -43,10 +43,12 @@ func NewUpgrader() *Upgrader {
 }
 
 // ExecBinary 真实执行一个二进制(升级后以新二进制跑 install-skill 用)。
+// Windows 下 HideWindow(零闪窗铁律,同 mcp 拉起 serve 的做法)。
 func ExecBinary(exe string, args ...string) error {
 	cmd := exec.Command(exe, args...)
 	cmd.Stdout = io.Discard // 输出由升级报告呈现,不透传
 	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = procAttr()
 	return cmd.Run()
 }
 
@@ -100,7 +102,8 @@ func (u *Upgrader) Upgrade(ctx context.Context, version string) (Report, error) 
 		target = tag
 	}
 
-	if err := u.replace(ctx, target); err != nil {
+	oldPath, err := u.replace(ctx, target)
+	if err != nil {
 		return Report{}, err
 	}
 
@@ -115,6 +118,7 @@ func (u *Upgrader) Upgrade(ctx context.Context, version string) (Report, error) 
 		From:       u.Current,
 		To:         target,
 		BinaryPath: u.ExePath,
+		OldPath:    oldPath,
 		SkillPath:  SkillPath(u.SkillsRoot),
 		SkillErr:   skillErr,
 		MCP:        CheckMCPConfig(u.ClaudeConfigPath, u.ExePath),
@@ -150,17 +154,18 @@ func normalizeTag(v string) (string, error) {
 	return tag, nil
 }
 
-// replace 下载 tag 的资产并替换 u.ExePath:临时文件建在安装目录旁边
-// (创建失败即目标目录不可写,直接失败给手动命令)→ SHA256SUMS 校验 →
-// 设可执行权限 → 原文件改名为 <名>.old → 临时文件改名到位;任何一步
-// 失败都尽力回滚,原文件保持可用。
-func (u *Upgrader) replace(ctx context.Context, tag string) error {
+// replace 下载 tag 的资产并替换 u.ExePath,返回旧二进制实际落位(改名
+// 后的路径):临时文件建在安装目录旁边(创建失败即目标目录不可写,
+// 直接失败给手动命令)→ SHA256SUMS 校验 → 设可执行权限 → 原文件改名
+// 为 <名>.old(被占用时改用备用名 .old.1、.old.2…)→ 临时文件改名到位;
+// 任何一步失败都尽力回滚,原文件保持可用。
+func (u *Upgrader) replace(ctx context.Context, tag string) (string, error) {
 	dir := filepath.Dir(u.ExePath)
 	asset := assetName()
 
 	tmp, err := os.CreateTemp(dir, ".mockit-upgrade-*")
 	if err != nil {
-		return u.manualErr(dir, err, tag, asset)
+		return "", u.manualErr(dir, err, tag, asset)
 	}
 	tmpName := tmp.Name()
 	// 关句柄+删除残留:成功改名后此路径已不存在,两步都落空无害;
@@ -172,42 +177,57 @@ func (u *Upgrader) replace(ctx context.Context, tag string) error {
 
 	body, err := u.fetch(ctx, tag, asset)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if _, err := tmp.Write(body); err != nil {
-		return fmt.Errorf("写临时文件失败: %w", err)
+		return "", fmt.Errorf("写临时文件失败: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("关闭临时文件失败: %w", err)
+		return "", fmt.Errorf("关闭临时文件失败: %w", err)
 	}
 
 	want, err := u.expectedSum(ctx, tag, asset)
 	if err != nil {
-		return err
+		return "", err
 	}
 	got, err := fileSHA256(tmpName)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !strings.EqualFold(got, want) {
-		return fmt.Errorf("SHA256 校验不一致(资产 %s:期望 %s,实得 %s),已中止,原文件未动", asset, want, got)
+		return "", fmt.Errorf("SHA256 校验不一致(资产 %s:期望 %s,实得 %s),已中止,原文件未动", asset, want, got)
 	}
 
 	if err := os.Chmod(tmpName, 0o755); err != nil {
-		return fmt.Errorf("设置可执行权限失败: %w", err)
+		return "", fmt.Errorf("设置可执行权限失败: %w", err)
 	}
-	oldPath := u.ExePath + ".old"
-	_ = os.Remove(oldPath) // 清上次残留(尽力);Windows 上旧进程仍占用时后面改名会失败
+	oldPath, err := u.reserveOld()
+	if err != nil {
+		return "", err
+	}
 	if err := os.Rename(u.ExePath, oldPath); err != nil {
-		return fmt.Errorf("把原文件改名为 %s 失败: %w", oldPath, err)
+		return "", fmt.Errorf("把原文件改名为 %s 失败: %w", oldPath, err)
 	}
 	if err := os.Rename(tmpName, u.ExePath); err != nil {
 		if rb := os.Rename(oldPath, u.ExePath); rb != nil {
-			return fmt.Errorf("临时文件改名到位失败:%v;回滚亦失败:%v(原文件在 %s,请手动恢复)", err, rb, oldPath)
+			return "", fmt.Errorf("临时文件改名到位失败:%v;回滚亦失败:%v(原文件在 %s,请手动恢复)", err, rb, oldPath)
 		}
-		return fmt.Errorf("临时文件改名到位失败(已回滚,原文件可用): %w", err)
+		return "", fmt.Errorf("临时文件改名到位失败(已回滚,原文件可用): %w", err)
 	}
-	return nil
+	return oldPath, nil
+}
+
+// reserveOld 挑一个旧二进制的落位名并腾出位置:优先 <名>.old(不存在或
+// 删掉旧残留即用);被占用删不掉(Windows 上旧 serve/MCP 仍从该文件
+// 运行)则依次改用 .old.1、.old.2…(审查 S2:运行中也能再次升级)。
+func (u *Upgrader) reserveOld() (string, error) {
+	for i := 0; i <= oldAltLimit; i++ {
+		cand := oldPath(u.ExePath, i)
+		if err := os.Remove(cand); err == nil || os.IsNotExist(err) {
+			return cand, nil // 名字可用(不存在或残留已删)
+		}
+	}
+	return "", fmt.Errorf("无法腾出旧文件位置(%s%s 及备用名均被占用,请手动清理后重试)", u.ExePath, oldSuffix)
 }
 
 // manualErr 生成"目标目录不可写"的失败:直接失败并给出手动升级命令;
@@ -270,6 +290,7 @@ type Report struct {
 	From          string   // 旧版本(原样)
 	To            string   // 新版本 tag(如 v0.3.0)
 	BinaryPath    string   // 被替换的二进制路径
+	OldPath       string   // 旧二进制改名后的实际落位(.old 或备用名 .old.N)
 	SkillPath     string   // 技能写入目标
 	SkillErr      string   // 非空 = 新二进制 install-skill 失败(含手动命令)
 	MCP           MCPCheck // MCP 配置只读检查结果
@@ -283,7 +304,7 @@ func (r Report) String() string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "升级完成:%s → %s\n", dispVersion(r.From), dispVersion(r.To))
-	fmt.Fprintf(&b, "二进制:%s(旧文件留在 %s.old,下次启动时自动清理)\n", r.BinaryPath, r.BinaryPath)
+	fmt.Fprintf(&b, "二进制:%s(旧二进制改名为 %s,之后的 mockit 启动会尽力清理)\n", r.BinaryPath, r.OldPath)
 	if r.SkillErr != "" {
 		fmt.Fprintf(&b, "技能:未写入!%s\n", r.SkillErr)
 	} else {

@@ -62,3 +62,54 @@ func TestRemoveOldBinaryUndeletableSilent(t *testing.T) {
 		t.Fatalf("删不掉的 .old 应原样保留(静默跳过): %v", err)
 	}
 }
+
+// 启动清理连带识别备用名 .old.N(审查 S2:.old 被占用时旧文件改用的落位)。
+func TestRemoveOldBinaryCleansAlternateNames(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "mockit.exe")
+	if err := os.WriteFile(exe, []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alt1, alt2 := exe+".old.1", exe+".old.2"
+	for _, p := range []string{alt1, alt2} {
+		if err := os.WriteFile(p, []byte("old"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	RemoveOldBinary(exe)
+
+	for _, p := range []string{alt1, alt2} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("备用名残留 %s 应被删除, err=%v", p, err)
+		}
+	}
+	if _, err := os.Stat(exe); err != nil {
+		t.Fatalf("当前二进制不得被波及: %v", err)
+	}
+
+	t.Run("占用中的 .old 不影响清理备用名", func(t *testing.T) {
+		dir := t.TempDir()
+		exe := filepath.Join(dir, "mockit.exe")
+		if err := os.WriteFile(exe, []byte("new"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		old := exe + ".old"
+		if err := os.MkdirAll(filepath.Join(old, "locked"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		alt1 := exe + ".old.1"
+		if err := os.WriteFile(alt1, []byte("old"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		RemoveOldBinary(exe)
+
+		if _, err := os.Stat(old); err != nil {
+			t.Fatalf("删不掉的 .old 应原样保留: %v", err)
+		}
+		if _, err := os.Stat(alt1); !os.IsNotExist(err) {
+			t.Fatalf(".old.1 应被删除: %v", err)
+		}
+	})
+}

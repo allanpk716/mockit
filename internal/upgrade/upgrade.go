@@ -1,6 +1,7 @@
 // 升级能力的"检查最新版本"入口(票 #14,包级说明见 skill.go):
 // 从 release 基地址取最新 tag,与当前版本按 semver 比较,结果缓存于
 // 数据目录(24 小时有效)。它也是之后 MCP 新版提醒的数据来源。
+
 package upgrade
 
 import (
@@ -110,20 +111,36 @@ func (c *Checker) client() *http.Client {
 	}
 }
 
-// checkCache 是缓存文件的内容。
+// checkCache 是缓存文件的内容。失败时间与原因另记(FailedAt/FailErr),
+// 与最近一次成功结果(Latest/CheckedAt)并存:失败不覆盖好结果(票 #14)。
 type checkCache struct {
-	Latest    string    `json:"latest"`
-	CheckedAt time.Time `json:"checked_at"`
+	Latest    string    `json:"latest"`              // 最近一次成功取得的最新 tag(失败后保留)
+	CheckedAt time.Time `json:"checked_at"`          // Latest 的取得时间
+	FailedAt  time.Time `json:"failed_at,omitempty"` // 最近一次检查失败的时间(零值 = 无)
+	FailErr   string    `json:"fail_err,omitempty"`  // 最近一次检查失败的原因
+}
+
+// failureReason 返回缓存里的失败原因(空则给兑底文案)。
+func (cc checkCache) failureReason() string {
+	if cc.FailErr != "" {
+		return cc.FailErr
+	}
+	return "上次检查失败(原因未记录)"
 }
 
 // Check 检查最新版本。force 为真时跳过缓存强制刷新(--check 走强制);
-// 网络 / HTTP / 响应异常作为 StateFailed 的结果返回,不覆盖已有缓存。
+// 网络 / HTTP / 响应异常作为 StateFailed 的结果返回,并写入一条带时间
+// 戳的失败缓存(24 小时内后台检查不重试;另记失败时间与原因,不覆盖
+// 已有的最近成功结果)。
 func (c *Checker) Check(ctx context.Context, force bool) Result {
 	res := Result{Current: c.Current}
 
 	var latest string
 	if !force {
 		if cc, ok := c.readCache(); ok {
+			if cc.Latest == "" { // 失败缓存命中:24 小时内不重试
+				return Result{Current: c.Current, State: StateFailed, Err: cc.failureReason(), CacheHit: true}
+			}
 			latest = cc.Latest
 			res.CacheHit = true
 		}
@@ -133,6 +150,7 @@ func (c *Checker) Check(ctx context.Context, force bool) Result {
 		if err != nil {
 			res.State = StateFailed
 			res.Err = err.Error()
+			c.writeFailedCache(err.Error())
 			return res
 		}
 		latest = tag
@@ -153,17 +171,31 @@ func (c *Checker) Check(ctx context.Context, force bool) Result {
 	return res
 }
 
-// readCache 读有效期内且内容可解析的缓存;否则视为没有缓存。
+// readCache 读有效期内且内容可解析的缓存;否则视为没有缓存。成功结果
+// 优先于失败结果(两者都新鲜时回好结果,坏结果不覆盖好结果);命中
+// 失败缓存时返回的 Latest 为空,由调用方按失败处理。
 func (c *Checker) readCache() (checkCache, bool) {
+	cc, ok := c.readCacheRaw()
+	if !ok {
+		return checkCache{}, false
+	}
+	if _, ok := parseSemver(cc.Latest); ok && time.Since(cc.CheckedAt) <= c.ttl() {
+		return cc, true
+	}
+	if !cc.FailedAt.IsZero() && time.Since(cc.FailedAt) <= c.ttl() {
+		return checkCache{FailedAt: cc.FailedAt, FailErr: cc.FailErr}, true
+	}
+	return checkCache{}, false
+}
+
+// readCacheRaw 读缓存文件并解析,不判有效期。
+func (c *Checker) readCacheRaw() (checkCache, bool) {
 	b, err := os.ReadFile(c.cacheFile())
 	if err != nil {
 		return checkCache{}, false
 	}
 	var cc checkCache
 	if err := json.Unmarshal(b, &cc); err != nil {
-		return checkCache{}, false
-	}
-	if _, ok := parseSemver(cc.Latest); !ok || time.Since(cc.CheckedAt) > c.ttl() {
 		return checkCache{}, false
 	}
 	return cc, true
@@ -179,6 +211,15 @@ func (c *Checker) writeCache(cc checkCache) {
 		return
 	}
 	_ = os.WriteFile(c.cacheFile(), b, 0o644)
+}
+
+// writeFailedCache 把检查失败写入缓存:失败时间与原因另记,保留文件里
+// 已有的最近成功结果(审查 S1:离线时 24 小时内不重试,好结果不被抹掉)。
+func (c *Checker) writeFailedCache(reason string) {
+	cc, _ := c.readCacheRaw() // 读不到就从头记(零值亦可)
+	cc.FailedAt = time.Now()
+	cc.FailErr = reason
+	c.writeCache(cc)
 }
 
 // fetchLatest 从 release 基地址取最新 tag:GET <base>/latest 跟随重定向,

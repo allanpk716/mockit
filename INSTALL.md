@@ -250,4 +250,4 @@ if [ "$V" = "${TAG#v}" ]; then echo "版本对齐:$TAG"; else echo "版本不符
 - **已是 0.3.0 及以后**：不用再手动走步骤。让 agent 调 MCP 工具 `mockit_upgrade`，或本机运行 `mockit upgrade`——从 GitHub release 下载对应平台二进制，SHA256 校验通过后替换，并写入配套技能；升级报告会列出旧→新版本、二进制路径、技能路径与 MCP 配置检查结果。完成后**完全退出并重启 Claude Code**（只开新会话不够）；正在运行的 serve 不受影响。已是最新时只回“已是最新 vX”，什么都不改。
   - 只看版本：`mockit upgrade --check` 或 `mockit_upgrade` 带 `check_only: true`；
   - 指定版本（含降级回滚）：`mockit upgrade --version vX.Y.Z` 或 `mockit_upgrade` 带 `version`。
-- **0.2.0 及更早版本**：没有升级能力，先按上面步骤 1~6 手动升级一次到 0.3.0（各步幂等：重命名覆盖旧文件、PATH 判重不重复追加、配置只更新 `mockit` 一个键、技能覆盖同名文件），之后即可走自动升级。
+- **0.2.0 及更早版本**：没有升级能力，先按上面步骤 1~6 手动升级一次到 0.3.0（各步幂等：重命名覆盖旧文件、PATH 判重不重复追加、配置只更新 `mockit` 一个键、技能覆盖同名文件），之后即可用 `mockit upgrade` / `mockit_upgrade` 升级。

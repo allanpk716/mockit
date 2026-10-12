@@ -149,10 +149,15 @@ func TestCheckCacheHitExpiryAndForce(t *testing.T) {
 	}
 }
 
-// badRelease 起一个可控的坏响应服务器:mode 决定 /latest 的行为。
-func badRelease(t *testing.T, mode string) *httptest.Server {
+// badRelease 起一个可控的坏响应服务器:mode 决定 /latest 的行为,
+// 并统计 /latest 命中次数。
+func badRelease(t *testing.T, mode string) (*httptest.Server, *int64) {
 	t.Helper()
+	var hits int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/latest" {
+			atomic.AddInt64(&hits, 1)
+		}
 		switch mode {
 		case "http500":
 			w.WriteHeader(http.StatusInternalServerError)
@@ -163,13 +168,13 @@ func badRelease(t *testing.T, mode string) *httptest.Server {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, &hits
 }
 
 func TestCheckFailures(t *testing.T) {
 	for _, mode := range []string{"http500", "noTag", "badTag"} {
 		t.Run(mode, func(t *testing.T) {
-			srv := badRelease(t, mode)
+			srv, hits := badRelease(t, mode)
 			c := &Checker{BaseURL: srv.URL, DataDir: t.TempDir(), Current: "0.2.0"}
 
 			res := c.Check(context.Background(), false) // 不 panic,失败也是结果
@@ -180,8 +185,25 @@ func TestCheckFailures(t *testing.T) {
 			if res.Err == "" {
 				t.Fatal("失败结果须带原因")
 			}
-			if _, err := os.Stat(c.cacheFile()); !os.IsNotExist(err) {
-				t.Fatal("失败不应写缓存")
+			// 失败也写缓存(审查 S1):24 小时内再查直接回失败结果,
+			// 不再重新请求 GitHub(离线时不会被每次工具调用反复打)
+			res2 := c.Check(context.Background(), false)
+			if res2.State != StateFailed || !res2.CacheHit {
+				t.Fatalf("失败缓存有效期内应直接命中失败结果,得 %+v", res2)
+			}
+			if res2.Err == "" {
+				t.Fatal("缓存命中的失败结果须带原因")
+			}
+			if got := atomic.LoadInt64(hits); got != 1 {
+				t.Fatalf("失败缓存有效期内 /latest 请求数 = %d,想 1", got)
+			}
+			// 强制刷新(--check)不受失败缓存限制,仍发请求
+			res3 := c.Check(context.Background(), true)
+			if res3.CacheHit {
+				t.Fatal("强制刷新不应命中缓存")
+			}
+			if got := atomic.LoadInt64(hits); got != 2 {
+				t.Fatalf("强制刷新后 /latest 请求数 = %d,想 2", got)
 			}
 		})
 	}
@@ -205,6 +227,35 @@ func TestCheckNetworkFailureKeepsCache(t *testing.T) {
 	res = c.Check(context.Background(), false)
 	if !res.CacheHit || res.Latest != "v0.3.0" {
 		t.Fatalf("坏结果不应覆盖缓存,得 %+v", res)
+	}
+}
+
+// 失败另记时间与原因,不抹掉缓存里最近一次成功结果(审查 S1/#14):
+// 好结果过期后检查失败,文件里仍保留 v0.3.0;失败缓存有效期内再查
+// 命中的是失败结果,而不是把过期的旧值当新结果返回。
+func TestCheckFailureKeepsGoodResult(t *testing.T) {
+	srv, _ := fakeRelease(t, "v0.3.0")
+	c := &Checker{BaseURL: srv.URL, DataDir: t.TempDir(), Current: "0.2.0", TTL: 60 * time.Millisecond}
+	if res := c.Check(context.Background(), false); res.State != StateUpgradable {
+		t.Fatalf("预置成功检查失败:%+v", res)
+	}
+
+	srv.Close()                     // 网络断
+	time.Sleep(80 * time.Millisecond) // 好结果过期
+	if res := c.Check(context.Background(), false); res.State != StateFailed {
+		t.Fatalf("过期后断网检查应失败,得 %+v", res)
+	}
+	b, err := os.ReadFile(c.cacheFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "v0.3.0") {
+		t.Fatalf("失败不得抹掉缓存里的最近成功结果: %s", b)
+	}
+
+	res := c.Check(context.Background(), false)
+	if res.State != StateFailed || !res.CacheHit || res.Latest != "" {
+		t.Fatalf("失败缓存有效期内应命中失败结果(Latest 须为空),得 %+v", res)
 	}
 }
 

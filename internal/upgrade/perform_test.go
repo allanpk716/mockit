@@ -218,6 +218,17 @@ func TestUpgradeReplacesBinaryWritesSkillReports(t *testing.T) {
 			t.Fatalf("升级报告 %q 缺 %q", s, want)
 		}
 	}
+	// 文案不得声称“旧文件留在 .old 待下次启动清理”:升级流程内新二进制跑
+	// install-skill 本身就是一次 mockit 启动,Mac/Linux 上此刻已把 .old
+	// 清掉(审查 S3)。只说“改名为 …、启动时尽力清理”。
+	for _, want := range []string{"旧二进制改名为", ".old", "尽力清理"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("升级报告关于 .old 的文案缺 %q: %q", want, s)
+		}
+	}
+	if strings.Contains(s, "下次启动时自动清理") {
+		t.Fatalf("升级报告不得声称旧文件留在 .old 等下次启动清理(实际已被 install-skill 子进程清理): %q", s)
+	}
 }
 
 // 指定版本与降级:--version 任意已发布版本(含降级、等于当前重装);
@@ -423,6 +434,41 @@ func TestUpgradeSkillFailureReported(t *testing.T) {
 	}
 }
 
+// .old 被占用(Windows 上旧 serve/MCP 仍从该文件运行;这里用非空目录
+// 模拟“删不掉也盖不住”)时,升级改用备用名 .old.1 完成,不因 .old 卡死
+// (审查 S2:运行中也能再次升级);被占用的 .old 原样保留。
+func TestUpgradeSucceedsWithOccupiedOld(t *testing.T) {
+	fx := newFixture(t, "v0.3.0", "0.2.0")
+	fx.up.addTag("v0.3.0", []byte("new binary"))
+	old := fx.exe + ".old" // 非空目录:os.Remove 删不掉(两平台一致),改名也盖不上去
+	if err := os.MkdirAll(filepath.Join(old, "locked"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := fx.u.Upgrade(context.Background(), "")
+
+	if err != nil {
+		t.Fatalf(".old 被占用不应中止升级: %v", err)
+	}
+	got, _ := os.ReadFile(fx.exe)
+	if string(got) != "new binary" {
+		t.Fatalf("二进制应被替换: %q", got)
+	}
+	alt, err := os.ReadFile(fx.exe + ".old.1")
+	if err != nil || string(alt) != "old binary" {
+		t.Fatalf("旧字节应落到备用名 .old.1: %q err=%v", alt, err)
+	}
+	if fi, err := os.Stat(old); err != nil || !fi.IsDir() {
+		t.Fatalf("被占用的 .old 应原样保留: %v", err)
+	}
+	if rep.OldPath != fx.exe+".old.1" {
+		t.Fatalf("报告应记录旧文件实际落位: %q", rep.OldPath)
+	}
+	if !strings.Contains(rep.String(), ".old.1") {
+		t.Fatalf("报告文本应写实际的旧文件落位: %q", rep.String())
+	}
+}
+
 // MCP 配置只读检查:正常(裸命令/绝对路径)、缺失、不一致三种结论;
 // 后两种附修复指引;从不写这个文件。
 func TestCheckMCPConfigStates(t *testing.T) {
@@ -471,5 +517,24 @@ func TestCheckMCPConfigStates(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Windows 上 command 为裸 mockit.exe(不带路径)也应视为正常:PATH 解析
+// 时 cmd / CreateProcess 都可能带上 .exe 后缀。
+func TestCheckMCPConfigWindowsBareExeCommand(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows 专属行为")
+	}
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "claude.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"mcpServers":{"mockit":{"command":"mockit.exe","args":["mcp"]}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mc := CheckMCPConfig(cfgPath, filepath.Join(dir, "mockit.exe"))
+
+	if mc.State != MCPOk {
+		t.Fatalf("结论 = %q,想 %q(hint=%q)", mc.State, MCPOk, mc.Hint)
 	}
 }
