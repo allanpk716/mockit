@@ -15,10 +15,10 @@ mockit 是一个跑在**你所在机器**上的审核服务:你调 MCP 工具提
 ```
 
 - `command` 按机器替换,如 `"C:/tools/mockit.exe"`(正斜杠即可);Linux/macOS 同理。
-- **不需要先起服务**:第一次调用任何工具时,MCP 会自动拉起本机 serve(并发调用也只会有一个实例);版本不一致时自动停旧起新。首次调用可能多花几秒,属正常。
+- **不需要先起服务**：第一次调用任何工具时，MCP 会自动拉起本机 serve（并发调用也只会有一个实例）；serve 比 MCP 旧时自动停旧起新，serve 更新时直接复用并提示重启 Claude Code（升级后新旧会话不互踢）。首次调用可能多花几秒，属正常。
 - serve 与你必须同机;数据存 `~/.mockit/`(SQLite + 页面文件)。
 
-## 三个工具
+## 四个工具
 
 ### mockit_submit — 提交候选
 
@@ -47,7 +47,18 @@ mockit 是一个跑在**你所在机器**上的审核服务:你调 MCP 工具提
 
 ### mockit_list — 翻历史
 
-参数 `status`(`pending`/`reviewed`,可选)、`limit`(可选)。返回提交简列。用于回顾"当时选了哪版"。
+参数 `status`（`pending`/`reviewed`，可选）、`limit`（可选）。返回提交简列。用于回顾“当时选了哪版”。
+
+### mockit_upgrade — 升级 / 查看版本
+
+参数 `version`（可选，目标版本 vX.Y.Z，含降级）、`check_only`（可选，只查不装）。`check_only: true` 返回当前/最新版本与可升级性；默认执行完整升级，返回升级报告（旧→新版本、二进制路径、技能路径、MCP 配置检查结果）。
+
+**使用边界（重要）：**
+
+- **仅在用户明确要求升级或查看版本时调用，勿自发升级。**
+- 任何工具结果末尾若附“mockit 有新版 v…（当前 v…）”的一句话提醒（每进程至多一次），把它转告用户即可，是否升级由用户决定。
+- 升级成功后按报告提醒用户：**完全退出并重启 Claude Code**（只开新会话不够）；正在运行的 serve 不受影响。
+- 结果末尾出现“本会话 MCP 版本（…）旧于 serve（…）”时：本会话仍在跑旧代码，功能照常，提醒用户重启 Claude Code 即可对齐。
 
 ## 标准工作流
 
@@ -83,6 +94,8 @@ mockit 是一个跑在**你所在机器**上的审核服务:你调 MCP 工具提
 
 ## 环境事实(排障时有用)
 
-- 双模式单二进制:`mockit serve`(常驻 HTTP,一般不用你管)/ `mockit mcp`(stdio,你走的就是它);`mockit version` 查版本。
+- 双模式单二进制：`mockit serve`（常驻 HTTP，一般不用你管）/ `mockit mcp`（stdio，你走的就是它）；`mockit version` 查版本。
+- 升级备用通道（MCP 起不来时也能手动升）：`mockit upgrade`（`--check` 只看版本，`--version vX.Y.Z` 指定版本含降级）、`mockit install-skill` 单独写技能。
+- 新版检查：MCP 后台每 24 小时至多查一次最新 release，失败静默不影响任何工具；`~/.mockit/config.json` 里 `"update_check": false` 可关掉检查与提醒。
 - serve 默认 `0.0.0.0:8321`,被占自动 +1(最多试 10 个);实际端口写在 `~/.mockit/server.lock`。
 - 运行日志:`~/.mockit/logs/serve.log`。

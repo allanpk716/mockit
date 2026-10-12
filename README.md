@@ -16,9 +16,11 @@ Go 单二进制,双模式,零外部依赖(SQLite 驱动已 vendor,离线可构�
 ```bash
 go build -o mockit.exe .   # 依赖已 vendor,离线可构建
 
-mockit serve      # 模式一:常驻 HTTP server(页面展示、审核记录、自动清理)
-mockit mcp        # 模式二:stdio MCP server(agent 提交/查询的唯一通道)
-mockit version    # 打印版本,当前 0.2.0
+mockit serve           # 模式一：常驻 HTTP server（页面展示、审核记录、自动清理）
+mockit mcp             # 模式二：stdio MCP server（agent 提交/查询的唯一通道）
+mockit version         # 打印版本，当前 0.3.0
+mockit upgrade         # 手动升级（--check 只看版本，--version vX.Y.Z 指定版本含降级）
+mockit install-skill   # 写入内嵌技能到 ~/.claude/skills/mockit/SKILL.md
 ```
 
 `mockit serve` 启动后:
@@ -39,7 +41,7 @@ agent:           紧接着 mockit_get_review(id, wait=600)   # 挂起等待,用�
 
 `mockit_submit` 返回 id + 审核页 URL + 各候选 URL。URL = 主机名(自动探测本机 NetBird 网段 100.64.0.0/10 唯一命中 IPv4,或配置的 `external_url`)+ `server.lock` 记载的实际端口(端口漂移自动跟随,配置端口永不进入 URL)。探测歧义/零命中且未配置 `external_url` 时,submit 明确报错提示配置(server 与页面本身照常可用),不会默默退化成本机地址。
 
-手工 `mockit serve` 仍然可用;serve 已在跑时 MCP 直接复用,MCP 与 serve 版本不符时自动停旧起新。
+手工 `mockit serve` 仍然可用；serve 已在跑时 MCP 直接复用；serve 比 MCP 旧时自动停旧起新，serve 更新时直接复用并提示重启 Claude Code（ADR 0001，升级后新旧会话不互踢）。
 
 ### 数据目录
 
@@ -69,13 +71,16 @@ agent:           紧接着 mockit_get_review(id, wait=600)   # 挂起等待,用�
 
 例外手段:需在项目内钉死版本时,项目根放 `.mcp.json`(`command` 写 mockit 可执行文件的绝对路径),或进 CC Switch 模板(见下节警告)。
 
-MCP 面为行分隔 JSON-RPC 2.0(stdio),支持 initialize / ping / tools/list / tools/call,日志走 stderr(不污染协议通道)。工具调用并发处理(长等待不堵 ping 与其他请求),支持 `notifications/cancelled` 中断等待中的调用。三个工具:
+MCP 面为行分隔 JSON-RPC 2.0（stdio），支持 initialize / ping / tools/list / tools/call，日志走 stderr（不污染协议通道）。工具调用并发处理（长等待不堵 ping 与其他请求），支持 `notifications/cancelled` 中断等待中的调用。四个工具：
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
-| `mockit_submit` | `title`(必填)、`note`(可选)、`variants`(1~6 个,每个 `label` 必填 + `html`(内联)或 `path`(本地 `.html`/`.htm`/`.zip`)二选一) | 提交待审;返回 id、状态、审核页 URL 与各候选 URL |
-| `mockit_get_review` | `id`、`wait`(可选,整数秒 0~600) | 取回状态/裁决/选中候选/批注;传 `wait` 且待审时挂起至裁决或超时,超时返回待审属正常,可再调 |
-| `mockit_list` | `status`(`pending`/`reviewed`,可选)、`limit`(可选) | 提交简列 |
+| `mockit_submit` | `title`（必填）、`note`（可选）、`variants`（1~6 个，每个 `label` 必填 + `html`（内联）或 `path`（本地 `.html`/`.htm`/`.zip`）二选一） | 提交待审；返回 id、状态、审核页 URL 与各候选 URL |
+| `mockit_get_review` | `id`、`wait`（可选，整数秒 0~600） | 取回状态/裁决/选中候选/批注；传 `wait` 且待审时挂起至裁决或超时，超时返回待审属正常，可再调 |
+| `mockit_list` | `status`（`pending`/`reviewed`，可选）、`limit`（可选） | 提交简列 |
+| `mockit_upgrade` | `version`（可选，目标版本 vX.Y.Z，含降级）、`check_only`（可选） | 升级或查看版本：从 GitHub release 下载校验替换二进制并写配套技能；仅用户明确要求时由 agent 调用 |
+
+后台新版提醒：MCP 每 24 小时至多后台查一次最新 release，发现新版在工具结果末尾提醒一次（每进程至多一次，只提醒不自动装，失败静默）；`update_check` 配置可关。
 
 MCP 与 serve 必须同机:MCP 读 `<data>/server.lock` 定位端口并 ping 探活。serve 未起时 **MCP 自动拉起**(两把锁分离协议:启动互斥锁保证并发冷启动只拉一个实例,实例锁由 serve 持有至退出;serve 活但无响应时工具明确报错提示人工处置)。
 
@@ -91,7 +96,7 @@ mockit 不受影响:安装引导([INSTALL.md](INSTALL.md))把 MCP 配置写进**
 
 ## 分发到其他机器
 
-一句话入口:让目标机器的 agent 按 release 附带的 [INSTALL.md](INSTALL.md) 装即可,人肉照做同样成立。
+一句话入口：让目标机器的 agent 按 release 附带的 [INSTALL.md](INSTALL.md) 装即可，人肉照做同样成立。装好以后，升级不用再手动：让 agent 调 `mockit_upgrade` 或运行 `mockit upgrade`，然后重启 Claude Code（0.2.0 及更早版本须先手动装一次 0.3.0，见 INSTALL.md「重装 / 升级」）。
 
 release 地址:[github.com/allanpk716/mockit/releases](https://github.com/allanpk716/mockit/releases),自 v0.1.1 起,公开仓公开下载。每个 release 附四件套、同 tag 版本对齐:四平台二进制(`mockit-windows-amd64.exe` / `mockit-darwin-amd64` / `mockit-darwin-arm64` / `mockit-linux-amd64`)+ INSTALL.md + AGENT-GUIDE.md + 技能文件(`skills/mockit/SKILL.md`)。
 
@@ -105,7 +110,7 @@ release 地址:[github.com/allanpk716/mockit/releases](https://github.com/allanp
 - 本地不想发版只想组装核对:`./scripts/release.sh`(干跑,打印完整 `gh release create` 命令不执行)。
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0   # CI 接管,出 release
+git tag v0.3.0 && git push origin v0.3.0   # CI 接管，出 release
 ```
 
 ## 配置
@@ -119,7 +124,8 @@ git tag v0.2.0 && git push origin v0.2.0   # CI 接管,出 release
   "data_dir": "~/.mockit",
   "page_retention_days": 14,
   "decision_retention_days": 90,
-  "external_url": ""
+  "external_url": "",
+  "update_check": true
 }
 ```
 
@@ -130,7 +136,8 @@ git tag v0.2.0 && git push origin v0.2.0   # CI 接管,出 release
 | `data_dir` | `MOCKIT_DATA_DIR` | `~/.mockit` | 数据目录;支持 `~` 展开,最终解析为绝对路径 |
 | `page_retention_days` | `MOCKIT_PAGE_RETENTION_D` | `14` | 页面文件保留天数(锚点=提交时间) |
 | `decision_retention_days` | `MOCKIT_DECISION_RETENTION_D` | `90` | 决策记录保留天数(锚点=审核完成时间) |
-| `external_url` | (无环境变量) | 空 | 对外 URL 的主机名,**只接受裸主机名**(域名或 IP 字面量,含 IPv6;带端口或 `http://` 前缀启动即报配置错误);留空=自动探测本机 NetBird 网段(100.64.0.0/10)唯一命中 IPv4,歧义/零命中时 submit 报错提示配置 |
+| `external_url` | (无环境变量) | 空 | 对外 URL 的主机名，**只接受裸主机名**（域名或 IP 字面量，含 IPv6；带端口或 `http://` 前缀启动即报配置错误）；留空=自动探测本机 NetBird 网段（100.64.0.0/10）唯一命中 IPv4，歧义/零命中时 submit 报错提示配置 |
+| `update_check` | (无环境变量) | `true` | 新版检查开关；`false` 时 MCP 不做后台新版检查、不发新版提醒（`mockit_upgrade` 手动查询/升级仍可用） |
 
 ## HTTP 面
 

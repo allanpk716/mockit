@@ -112,8 +112,8 @@ func TestServePortDriftLockShutdown(t *testing.T) {
 	if lk.Port != base+1 {
 		t.Fatalf("lock.port=%d,应漂移到 %d", lk.Port, base+1)
 	}
-	if lk.Version != "0.2.0" {
-		t.Fatalf("lock.version=%q", lk.Version)
+	if lk.Version != Version {
+		t.Fatalf("lock.version=%q(应等于常量 %s)", lk.Version, Version)
 	}
 	if lk.Token == "" {
 		t.Fatal("lock.token 不应为空")
@@ -135,7 +135,7 @@ func TestServePortDriftLockShutdown(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !containsVersion(body, "0.2.0") {
+	if resp.StatusCode != http.StatusOK || !containsVersion(body, Version) {
 		t.Fatalf("ping 错: %d %q", resp.StatusCode, body)
 	}
 

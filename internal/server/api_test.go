@@ -683,8 +683,8 @@ func TestPing(t *testing.T) {
 	}
 	var pj map[string]string
 	decodeJSON(t, resp, &pj)
-	if pj["version"] != "0.2.0" {
-		t.Fatalf("ping 版本错: %q", pj["version"])
+	if pj["version"] != Version {
+		t.Fatalf("ping 版本错: %q(应等于常量 %s)", pj["version"], Version)
 	}
 }
 
