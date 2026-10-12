@@ -49,6 +49,10 @@ type server struct {
 
 	httpc *http.Client
 
+	// notices 每进程一次的附加提示(票 13/ADR 0001):工具结果末尾追加,
+	// 每类(kind)每进程至多附一次;#11 的新版提醒复用此机制。
+	notices *noticeBoard
+
 	// 并发与串行化(规格 #4 票 08):工具调用各自在 goroutine 里执行,
 	// stdout 响应经 writeMu 串行化(一行一条完整 JSON,不交错);
 	// stderr 日志同样加锁(race 检测下并发写同一 io.Writer 才合法)。
@@ -88,6 +92,7 @@ func Run(cfg *config.Config) int {
 			return ensureServer(cfg, defaultSpawnServe)
 		},
 		httpc: &http.Client{Timeout: 60 * time.Second},
+		notices: newNoticeBoard(),
 	}
 	s.logf("mockit mcp %s 就绪(dataDir=%q)", Version, cfg.DataDir)
 	return s.loop(os.Stdin)
@@ -267,8 +272,14 @@ func (s *server) handleToolCall(id json.RawMessage, params json.RawMessage) {
 		}
 		s.mu.Unlock()
 		if suppress {
-			// MCP 规范:已取消的请求不再回复(通知本身也无回应)。
+			// MCP 规范:已取消的请求不再回复(通知本身也无回应)。提示不
+			// 消耗——留给下一个真正发出的结果(票 13)。
 			return
+		}
+		// 每进程一次的附加提示只随真正发出的结果消耗(票 13):取消/被顶替
+		// 的调用不携带,下一个发出的工具结果末尾再附。
+		if suffix := s.notices.flush(); suffix != "" {
+			text += suffix
 		}
 		s.reply(id, toolCallResult{
 			Content: []toolContent{{Type: "text", Text: text}},

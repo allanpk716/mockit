@@ -35,6 +35,7 @@ func newTestSrv(t *testing.T, backendURL string) (*server, *bytes.Buffer, *bytes
 			return nil, errors.New("测试不应触达 ensure")
 		},
 		httpc: &http.Client{Timeout: 5 * time.Second},
+		notices: newNoticeBoard(),
 	}
 	if backendURL != "" {
 		_, portStr, err := net.SplitHostPort(strings.TrimPrefix(backendURL, "http://"))
