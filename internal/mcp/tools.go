@@ -7,7 +7,8 @@ package mcp
 //   - submit 成功输出对外 URL:http:// + lock.base_host + : + 实例锁实际
 //     端口(D16 唯一拼接规则;IPv6 加方括号,F8)——这是产品输出,允许;
 //   - 一切错误文案不得携带内部 URL(127.0.0.1 环回等,经 errText 清洗);
-//   - get_review/list 一律不含 URL(F6 定案不变)。
+//   - get_review 待审时附审核链接(F6 修订,见 docs/adr/0002);已审结果与
+//     list 不含 URL。
 
 import (
 	"bytes"
@@ -73,7 +74,7 @@ func toolDefs() []toolDef {
 	return []toolDef{
 		{
 			Name:        "mockit_submit",
-			Description: "提交 1~6 个候选 mock(单 HTML 或 zip)供用户对比拍板;返回提交 id、审核页 URL 与各候选页 URL(手机可达;无法确定对外地址时报错,请提示用户在 config 配 external_url)。",
+			Description: "提交 1~6 个候选 mock(单 HTML 或 zip)供用户对比拍板;返回提交 id、审核链接与各候选链接(手机可达;无法确定对外地址时报错,请提示用户在 config 配 external_url)。拿到后须把审核链接原样(完整地址、单独一行)给用户,请其在手机或电脑上打开拍板。",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -100,7 +101,7 @@ func toolDefs() []toolDef {
 		},
 		{
 			Name:        "mockit_get_review",
-			Description: "按提交 id 取回审核结果:状态/裁决/选中候选/批注。可选 wait(整数秒,0~600):已审或未传 wait 时立即返回;待审时挂起等待,用户一裁决即返回裁决与批注;等到超时返回的仍是待审状态,属正常结果,可再调一次继续等待。",
+			Description: "按提交 id 取回审核结果:状态/裁决/选中候选/批注。可选 wait(整数秒,0~600):已审或未传 wait 时立即返回;待审时挂起等待,用户一裁决即返回裁决与批注;等到超时返回的仍是待审状态,属正常结果,可再调一次继续等待。待审时结果附审核链接,提醒用户时须一并给出。",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -358,10 +359,10 @@ func (s *server) toolSubmit(ctx context.Context, raw json.RawMessage) (string, b
 	// 票 09/D16:submit 结果出 URL(产品输出,允许);页面路由 /s/{id} 与
 	// /s/{id}/v{seq}。端口已含在 pubBase(实例锁实际端口)。
 	var b strings.Builder
-	fmt.Fprintf(&b, "已提交:id=%s 状态=%s 候选数=%d\n审核页: %s/s/%s",
+	fmt.Fprintf(&b, "已提交:id=%s 状态=%s 候选数=%d\n审核链接: %s/s/%s",
 		r.ID, statusText(r.Status), len(r.Variants), pubBase, r.ID)
 	if len(r.Variants) > 0 {
-		b.WriteString("\n候选页:")
+		b.WriteString("\n候选链接:")
 		for _, v := range r.Variants {
 			u := fmt.Sprintf("%s/s/%s/v%d", pubBase, r.ID, v.Seq)
 			if v.Label != "" {
@@ -506,6 +507,11 @@ func (s *server) toolGetReview(ctx context.Context, raw json.RawMessage) (string
 			parts[i] = fmt.Sprintf("[%d] %s(%s)", v.Seq, v.Label, v.Kind)
 		}
 		fmt.Fprintf(&b, "候选: %s\n", strings.Join(parts, " "))
+	}
+	if d.Status == "pending" {
+		if pubBase, err := publicBaseURL(lk); err == nil {
+			fmt.Fprintf(&b, "审核链接: %s/s/%s", pubBase, d.ID)
+		}
 	}
 	return b.String(), false
 }

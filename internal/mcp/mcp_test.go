@@ -34,7 +34,7 @@ func newTestSrv(t *testing.T, backendURL string) (*server, *bytes.Buffer, *bytes
 		ensure: func() (*lifecycle.Lock, error) {
 			return nil, errors.New("测试不应触达 ensure")
 		},
-		httpc: &http.Client{Timeout: 5 * time.Second},
+		httpc:   &http.Client{Timeout: 5 * time.Second},
 		notices: newNoticeBoard(),
 	}
 	if backendURL != "" {
@@ -151,7 +151,8 @@ func TestProtocolRoundTripInitializeToolsListToolsCall(t *testing.T) {
 		}
 	}
 
-	// tools/call:结果为 text content,含状态/裁决/选中候选/批注,不含 URL(F6)。
+	// tools/call:结果为 text content,含状态/裁决/选中候选/批注;已审不含
+	// URL(F6 修订后仅待审附审核链接)。
 	callRes := wantNoErrorResp(t, envs[2])
 	if _, has := callRes["isError"]; has {
 		t.Fatalf("tools/call 不应 isError: %v", callRes)
@@ -171,7 +172,7 @@ func TestProtocolRoundTripInitializeToolsListToolsCall(t *testing.T) {
 		}
 	}
 	if strings.Contains(text, "http") {
-		t.Fatalf("结果文本含 URL,违反 F1/F6:\n%s", text)
+		t.Fatalf("已审结果文本不应附 URL(F6 修订):\n%s", text)
 	}
 }
 

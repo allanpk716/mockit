@@ -7,7 +7,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -52,6 +54,7 @@ func TestGetReviewWaitPassthrough(t *testing.T) {
 	defer backend.Close()
 
 	s, _, _ := newTestSrv(t, backend.URL)
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
 
 	// 不传 wait:无查询参数,行为与原一致
 	text, isErr := s.callTool(context.Background(), "mockit_get_review", mustJSON(t, map[string]any{"id": "ab12cd"}))
@@ -76,8 +79,9 @@ func TestGetReviewWaitPassthrough(t *testing.T) {
 		if want := "wait=" + strconv.Itoa(w); gotQuery != want {
 			t.Fatalf("wait=%d 应透传查询串 %q,得 %q", w, want, gotQuery)
 		}
-		if !strings.Contains(text, "pending(待审)") || strings.Contains(text, "http") {
-			t.Fatalf("wait=%d 返回文本形状应不变:\n%s", w, text)
+		wantURL := fmt.Sprintf("审核链接: http://phone.test:%d/s/ab12cd", port)
+		if !strings.Contains(text, "pending(待审)") || !strings.Contains(text, wantURL) {
+			t.Fatalf("wait=%d 待审返回应附审核链接:\n%s", w, text)
 		}
 	}
 }
