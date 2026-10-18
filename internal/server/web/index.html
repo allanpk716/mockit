@@ -32,6 +32,15 @@ h2{
   margin:18px 16px 2px;font-size:14px;font-weight:600;color:var(--dim);
   letter-spacing:1px;
 }
+.toolbar{
+  display:flex;align-items:center;gap:8px;
+  padding:10px 12px 0;
+}
+.toolbar label{color:var(--dim);font-size:13px;flex:none}
+#project-filter{
+  flex:1;min-width:0;background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;
+}
 .card{
   display:flex;align-items:center;gap:10px;
   background:var(--surface);border:1px solid var(--border);border-radius:12px;
@@ -84,6 +93,10 @@ details[open] summary::after{content:" ⌄"}
 <body data-page="list">
 <header class="top"><span class="brand">mockit</span><span class="sub">提交列表</span></header>
 <main id="app">
+  <div class="toolbar">
+    <label for="project-filter">项目</label>
+    <select id="project-filter"></select>
+  </div>
   <h2 id="pending-summary" hidden>待审</h2>
   <div id="pending-list"></div>
 
@@ -104,6 +117,8 @@ details[open] summary::after{content:" ⌄"}
 var $ = function(id){ return document.getElementById(id); };
 var byId = {};   // id → 提交对象(pin 切换时用)
 var busy = false;
+var allItems = [];
+var selectedProject = 'all';
 
 function esc(s){
   return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
@@ -128,6 +143,28 @@ function decisionText(s){
   }
   return '已审';
 }
+function projectText(s){ return s.project_name || '未知项目'; }
+function projectKey(s){ return s.project_key || ''; }
+function projectOptions(){
+  var seen = {}, opts = [{key:'all',name:'全部'}];
+  for(var i=0;i<allItems.length;i++){
+    var key = projectKey(allItems[i]);
+    if(seen[key]) continue;
+    seen[key] = true;
+    opts.push({key:key, name:key === '' ? '未知项目' : projectText(allItems[i])});
+  }
+  return opts;
+}
+function renderProjects(){
+  var opts = projectOptions(), exists = false;
+  var html = opts.map(function(o){
+    if(o.key === selectedProject) exists = true;
+    return '<option value="' + esc(o.key) + '">' + esc(o.name) + '</option>';
+  }).join('');
+  if(!exists) selectedProject = 'all';
+  $('project-filter').innerHTML = html;
+  $('project-filter').value = selectedProject;
+}
 function toast(msg){
   var t = $('toast');
   t.textContent = msg;
@@ -140,6 +177,7 @@ function cardHTML(s){
     + '<div class="card-main">'
     + '<div class="card-title">' + esc(s.title || '(无标题)') + '</div>'
     + '<div class="card-meta"><span class="chip">候选 ' + (s.variants || []).length + '</span>'
+    + '<span class="chip">' + esc(projectText(s)) + '</span>'
     + '<span>' + fmtTime(s.created_at) + '</span></div>'
     + '</div>'
     + '<button type="button" class="pin' + (s.pinned ? ' on' : '') + '" data-pin="' + esc(s.id) + '">'
@@ -150,16 +188,20 @@ function rowHTML(s){
   return '<a class="row" href="/s/' + esc(s.id) + '">'
     + '<span class="row-title">' + esc(s.title || '(无标题)') + '</span>'
     + '<span class="badge b-' + esc(s.decision) + '">' + esc(decisionText(s)) + '</span>'
+    + '<span class="chip">' + esc(projectText(s)) + '</span>'
     + '<span class="time">' + fmtTime(s.reviewed_at || s.created_at) + '</span>'
     + '</a>';
 }
 
 function render(items){
+  allItems = items || [];
   var pend = [], rev = [];
   byId = {};
-  for(var i = 0; i < items.length; i++){
-    byId[items[i].id] = items[i];
-    (items[i].status === 'pending' ? pend : rev).push(items[i]);
+  renderProjects();
+  for(var i = 0; i < allItems.length; i++){
+    if(selectedProject !== 'all' && projectKey(allItems[i]) !== selectedProject) continue;
+    byId[allItems[i].id] = allItems[i];
+    (allItems[i].status === 'pending' ? pend : rev).push(allItems[i]);
   }
   $('pending-summary').hidden = pend.length === 0;
   $('pending-summary').textContent = '待审 · ' + pend.length;
@@ -167,7 +209,7 @@ function render(items){
   $('reviewed-sec').hidden = rev.length === 0;
   $('reviewed-summary').textContent = '已审 · ' + rev.length;
   $('reviewed-list').innerHTML = rev.map(rowHTML).join('');
-  $('empty').hidden = items.length !== 0;
+  $('empty').hidden = pend.length + rev.length !== 0;
 }
 
 function load(){
@@ -207,6 +249,12 @@ document.addEventListener('click', function(e){
   if(card){ location.href = '/s/' + card.getAttribute('data-id'); }
 });
 
+try { selectedProject = localStorage.getItem('mockit.project') || 'all'; } catch(e){}
+$('project-filter').addEventListener('change', function(){
+  selectedProject = this.value;
+  try { localStorage.setItem('mockit.project', selectedProject); } catch(e){}
+  render(allItems);
+});
 load();
 })();
 </script>

@@ -25,7 +25,7 @@ import (
 )
 
 // Version 与 main 包的 Version 常量保持同步(main 不可导入,此处复制;改动需两处同改)。
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 // defaultProtocolVersion 是客户端 initialize 未携带 protocolVersion 时的回显缺省值。
 const defaultProtocolVersion = "2024-11-05"
@@ -49,6 +49,12 @@ type server struct {
 	ensure func() (*lifecycle.Lock, error)
 
 	httpc *http.Client
+
+	// 来源项目身份:按 MCP 进程 cwd 所在 git 工作区根计算,每进程一次。
+	// 测试可直接注入 detectProject;nil 时按空项目处理。
+	detectProject func() (key, name string)
+	projectValue  projectInfo
+	projectOnce   sync.Once
 
 	// notices 每进程一次的附加提示(票 13/ADR 0001):工具结果末尾追加,
 	// 每类(kind)每进程至多附一次;#11 的新版提醒复用此机制。
@@ -101,9 +107,10 @@ func Run(cfg *config.Config) int {
 		ensure: func() (*lifecycle.Lock, error) {
 			return ensureServer(cfg, defaultSpawnServe)
 		},
-		httpc:   &http.Client{Timeout: 60 * time.Second},
-		notices: newNoticeBoard(),
-		updeps:  prodUpgradeDeps(cfg),
+		httpc:         &http.Client{Timeout: 60 * time.Second},
+		detectProject: detectProject,
+		notices:       newNoticeBoard(),
+		updeps:        prodUpgradeDeps(cfg),
 	}
 	s.logf("mockit mcp %s 就绪(dataDir=%q)", Version, cfg.DataDir)
 	return s.loop(os.Stdin)

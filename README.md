@@ -1,15 +1,17 @@
 # mockit
 
-mock 页面审核闭环服务:AI agent 经 MCP 提交 mock 页面(单 HTML 或 zip),用户在手机上全屏对比候选并拍板,agent 贴完链接挂起等待、裁决一落即取回,全程不出对话。
+mock 页面审核闭环服务:AI agent 经 MCP 提交 mock 页面(单 HTML 或 zip),用户在手机或电脑上全屏对比候选并拍板,agent 贴完链接挂起等待、裁决一落即取回,全程不出对话。
 
 Go 单二进制,双模式,零外部依赖(SQLite 驱动已 vendor,离线可构建),任何一台机器放一个 exe + 一行 MCP 配置就能用。
 
 ## 核心闭环(四步)
 
 1. **agent 提交** — agent 调 MCP 工具 `mockit_submit`,提交候选(推荐 3~5 个,上限 1~6;单 HTML 或 zip,单文件 ≤20MB);
-2. **贴地址** — submit 直接返回审核页 URL(主机名自动探测本机 NetBird 网段,或用 `external_url` 指定),agent 贴在对话里,用户手机(同一 NetBird 网络)点开;
-3. **手机拍板** — 用户在列表页点开提交,候选页全屏对比(底栏圆点切换候选),点「选它/通过」或「打回」弹出底部批注面板裁决(approve / reject / choose+选中的候选);打回必写批注,批注上限 2000 字,写到一半自动存草稿、裁决后清除;
+2. **贴地址** — submit 直接返回审核链接(主机名自动探测本机 NetBird 网段,或用 `external_url` 指定),agent 贴在对话里,用户手机或电脑(同一 NetBird 网络)点开;get_review 待审时也附审核链接,agent 随时可重新贴;
+3. **手机或电脑拍板** — 用户在列表页点开提交,候选页全屏对比(底栏圆点切换候选),点「选它/通过」或「打回」弹出底部批注面板裁决(approve / reject / choose+选中的候选);打回必写批注,批注上限 2000 字,写到一半自动存草稿、裁决后清除;
 4. **取裁决** — agent 贴完链接立刻调 `mockit_get_review`(传 `wait` 挂起等待),用户一裁决即拿到状态/裁决/选中候选/批注,继续干活。
+
+多项目共用一台机器上的 mockit 时,每条提交自动记下**来源项目**(git 工作区根目录,每个 worktree 各算一个):`mockit_list` 默认只列当前项目,`mockit_get_review` 取到别的项目的提交会警告,手机首页显示项目标签并可按项目筛选。
 
 ## 快速开始
 
@@ -18,7 +20,7 @@ go build -o mockit.exe .   # 依赖已 vendor,离线可构建
 
 mockit serve           # 模式一：常驻 HTTP server（页面展示、审核记录、自动清理）
 mockit mcp             # 模式二：stdio MCP server（agent 提交/查询的唯一通道）
-mockit version         # 打印版本，当前 0.3.0
+mockit version         # 打印版本，当前 0.4.0
 mockit upgrade         # 手动升级（--check 只看版本，--version vX.Y.Z 指定版本含降级）
 mockit install-skill   # 写入内嵌技能到 ~/.claude/skills/mockit/SKILL.md
 ```
@@ -77,7 +79,7 @@ MCP 面为行分隔 JSON-RPC 2.0（stdio），支持 initialize / ping / tools/l
 |---|---|---|
 | `mockit_submit` | `title`（必填）、`note`（可选）、`variants`（1~6 个，每个 `label` 必填 + `html`（内联）或 `path`（本地 `.html`/`.htm`/`.zip`）二选一） | 提交待审；返回 id、状态、审核页 URL 与各候选 URL |
 | `mockit_get_review` | `id`、`wait`（可选，整数秒 0~600） | 取回状态/裁决/选中候选/批注；传 `wait` 且待审时挂起至裁决或超时，超时返回待审属正常，可再调 |
-| `mockit_list` | `status`（`pending`/`reviewed`，可选）、`limit`（可选） | 提交简列 |
+| `mockit_list` | `status`（`pending`/`reviewed`，可选）、`limit`（可选）、`all`（可选，默认只列当前项目） | 提交简列（`all` 时标出来源项目） |
 | `mockit_upgrade` | `version`（可选，目标版本 vX.Y.Z，含降级）、`check_only`（可选） | 升级或查看版本：从 GitHub release 下载校验替换二进制并写配套技能；仅用户明确要求时由 agent 调用 |
 
 后台新版提醒：MCP 每 24 小时至多后台查一次最新 release，发现新版在工具结果末尾提醒一次（每进程至多一次，只提醒不自动装，失败静默）；`update_check` 配置可关。
@@ -110,7 +112,7 @@ release 地址:[github.com/allanpk716/mockit/releases](https://github.com/allanp
 - 本地不想发版只想组装核对:`./scripts/release.sh`(干跑,打印完整 `gh release create` 命令不执行)。
 
 ```bash
-git tag v0.3.0 && git push origin v0.3.0   # CI 接管，出 release
+git tag v0.4.0 && git push origin v0.4.0   # CI 接管，出 release
 ```
 
 ## 配置

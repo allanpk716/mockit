@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // 纯 Go SQLite 驱动,注册名为 sqlite
@@ -45,12 +46,54 @@ type Store struct {
 	db *sql.DB
 }
 
+// migrateSubmissionProjects 为 0.4.0 前的旧库补来源项目列(CREATE TABLE
+// IF NOT EXISTS 不会给已存在表加列),幂等可重复执行。
+func migrateSubmissionProjects(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(submissions)`)
+	if err != nil {
+		return fmt.Errorf("store: 检查 submissions 列: %w", err)
+	}
+	defer rows.Close()
+	hasKey, hasName := false, false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("store: 读 submissions 列: %w", err)
+		}
+		switch name {
+		case "project_key":
+			hasKey = true
+		case "project_name":
+			hasName = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: 迭代 submissions 列: %w", err)
+	}
+	if !hasKey {
+		if _, err := db.Exec(`ALTER TABLE submissions ADD COLUMN project_key TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("store: 加 project_key 列: %w", err)
+		}
+	}
+	if !hasName {
+		if _, err := db.Exec(`ALTER TABLE submissions ADD COLUMN project_name TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("store: 加 project_name 列: %w", err)
+		}
+	}
+	return nil
+}
+
 // schema 建表迁移,全部 IF NOT EXISTS 保证幂等。
 const schema = `
 CREATE TABLE IF NOT EXISTS submissions (
 	id             TEXT PRIMARY KEY,
 	title          TEXT NOT NULL DEFAULT '',
 	note           TEXT NOT NULL DEFAULT '',
+	project_key    TEXT NOT NULL DEFAULT '',
+	project_name   TEXT NOT NULL DEFAULT '',
 	status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','reviewed')),
 	decision       TEXT CHECK (decision IS NULL OR decision IN ('approve','reject','choose')),
 	chosen_variant INTEGER,
@@ -88,6 +131,10 @@ func Open(dataDir string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: 建表迁移: %w", err)
 	}
+	if err := migrateSubmissionProjects(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: 数据库连接失败: %w", err)
@@ -101,10 +148,12 @@ func (s *Store) Close() error { return s.db.Close() }
 // CreateSubmission 新建一条待审提交,id 由调用方生成(6 位 base36);
 // note 一并入库(留档语义:随记录留档至决策保留期满,不被页面文件
 // 清理连带删除),created_at=当前时间。
-func (s *Store) CreateSubmission(id, title, note string) error {
+func (s *Store) CreateSubmission(id, title, note, projectKey, projectName string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO submissions (id, title, note, status, created_at) VALUES (?, ?, ?, ?, ?)`,
-		id, title, note, StatusPending, time.Now().Unix(),
+		`INSERT INTO submissions
+			(id, title, note, project_key, project_name, status, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, title, note, projectKey, projectName, StatusPending, time.Now().Unix(),
 	)
 	if err != nil {
 		return fmt.Errorf("store: 创建提交 %s: %w", id, err)
@@ -145,24 +194,35 @@ func (s *Store) Get(id string) (*Submission, error) {
 
 // List 按状态列提交:待审在前、已审在后,组内新在前;status 为空串则不过滤;
 // limit>0 时限制返回最近 limit 条提交(候选数不受影响);limit<=0 不限。
-func (s *Store) List(status string, limit int) ([]*Submission, error) {
+func (s *Store) List(status, projectKey string, limit int) ([]*Submission, error) {
 	const listOrder = ` ORDER BY (s.status = 'reviewed') ASC, s.created_at DESC, s.id DESC, v.seq ASC`
 	query := submissionJoinSQL
 	var args []any
+	filters := func() string {
+		var clauses []string
+		if status != "" {
+			clauses = append(clauses, `status = ?`)
+			args = append(args, status)
+		}
+		if projectKey != "" {
+			clauses = append(clauses, `project_key = ?`)
+			args = append(args, projectKey)
+		}
+		if len(clauses) == 0 {
+			return ""
+		}
+		return ` WHERE ` + strings.Join(clauses, ` AND `)
+	}
 	if limit > 0 {
 		// 先挑出目标提交(id 集),再 JOIN 取候选,保证 limit 按提交数截断
 		query += ` WHERE s.id IN (
 			SELECT id FROM submissions`
-		if status != "" {
-			query += ` WHERE status = ?`
-			args = append(args, status)
-		}
+		query += filters()
 		query += ` ORDER BY (status = 'reviewed') ASC, created_at DESC, id DESC LIMIT ?`
 		args = append(args, limit)
 		query += `)`
-	} else if status != "" {
-		query += ` WHERE s.status = ?`
-		args = append(args, status)
+	} else if where := filters(); where != "" {
+		query += where
 	}
 	query += listOrder
 
@@ -314,7 +374,8 @@ func (s *Store) DeleteRecord(id string) error {
 
 // submissionJoinSQL 提交左联候选的公共查询体(v.* 为 NULL 表示无候选)。
 const submissionJoinSQL = `
-SELECT s.id, s.title, s.note, s.status, s.decision, s.chosen_variant, s.comment,
+SELECT s.id, s.title, s.note, s.project_key, s.project_name,
+       s.status, s.decision, s.chosen_variant, s.comment,
        s.created_at, s.reviewed_at, s.pinned, s.files_deleted,
        v.id, v.submission_id, v.seq, v.label, v.kind, v.entry
 FROM submissions s
@@ -343,7 +404,8 @@ func collectSubmissions(rows *sql.Rows) ([]*Submission, error) {
 			vEntry     sql.NullString
 		)
 		if err := rows.Scan(
-			&sub.ID, &sub.Title, &sub.Note, &sub.Status, &decision, &chosen, &sub.Comment,
+			&sub.ID, &sub.Title, &sub.Note, &sub.ProjectKey, &sub.ProjectName, &sub.Status,
+			&decision, &chosen, &sub.Comment,
 			&sub.CreatedAt, &reviewedAt, &pinned, &filesDel,
 			&vID, &vSubID, &vSeq, &vLabel, &vKind, &vEntry,
 		); err != nil {

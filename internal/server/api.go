@@ -221,7 +221,7 @@ func (s *Server) handleListAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	subs, err := s.store.List(q.Get("status"), limit)
+	subs, err := s.store.List(q.Get("status"), q.Get("project"), limit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -376,6 +376,8 @@ type submissionJSON struct {
 	ID            string        `json:"id"`
 	Title         string        `json:"title"`
 	Note          string        `json:"note"`
+	ProjectKey    string        `json:"project_key"`
+	ProjectName   string        `json:"project_name"`
 	Status        string        `json:"status"`
 	Decision      string        `json:"decision"`
 	ChosenVariant int           `json:"chosen_variant"`
@@ -392,6 +394,8 @@ func subToJSON(sub *store.Submission, note string) submissionJSON {
 		ID:            sub.ID,
 		Title:         sub.Title,
 		Note:          note,
+		ProjectKey:    sub.ProjectKey,
+		ProjectName:   sub.ProjectName,
 		Status:        sub.Status,
 		Decision:      sub.Decision,
 		ChosenVariant: sub.ChosenVariant,

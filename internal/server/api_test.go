@@ -114,9 +114,11 @@ type variantIn struct {
 }
 
 type submitIn struct {
-	Title    string      `json:"title"`
-	Note     string      `json:"note"`
-	Variants []variantIn `json:"variants"`
+	Title       string      `json:"title"`
+	Note        string      `json:"note"`
+	ProjectKey  string      `json:"project_key"`
+	ProjectName string      `json:"project_name"`
+	Variants    []variantIn `json:"variants"`
 }
 
 type variantOut struct {
@@ -131,6 +133,8 @@ type detailOut struct {
 	ID            string       `json:"id"`
 	Title         string       `json:"title"`
 	Note          string       `json:"note"`
+	ProjectKey    string       `json:"project_key"`
+	ProjectName   string       `json:"project_name"`
 	Status        string       `json:"status"`
 	Decision      string       `json:"decision"`
 	ChosenVariant int          `json:"chosen_variant"`
@@ -278,6 +282,52 @@ func TestSubmitHTMLFullChain(t *testing.T) {
 	}
 	if string(drain(t, rawResp)) != html {
 		t.Fatalf("raw 内容错")
+	}
+}
+
+func TestSubmitAndListProjectFields(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	withProject := submitIn{
+		Title:       "带来源",
+		ProjectKey:  "proj/a",
+		ProjectName: "甲",
+		Variants:    []variantIn{htmlVariant("A", "a")},
+	}
+	resp := postJSON(t, ts, "/api/submissions", withProject)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("带来源提交应 201,得 %d: %s", resp.StatusCode, drain(t, resp))
+	}
+	var withOut detailOut
+	decodeJSON(t, resp, &withOut)
+	if withOut.ProjectKey != "proj/a" || withOut.ProjectName != "甲" {
+		t.Fatalf("来源项目回显错: %+v", withOut)
+	}
+
+	legacy := submitIn{Title: "旧 MCP", Variants: []variantIn{htmlVariant("A", "a")}}
+	var legacyOut detailOut
+	decodeJSON(t, postJSON(t, ts, "/api/submissions", legacy), &legacyOut)
+	if legacyOut.ProjectKey != "" || legacyOut.ProjectName != "" {
+		t.Fatalf("旧 MCP 不传来源应得空串: %+v", legacyOut)
+	}
+
+	var detail detailOut
+	decodeJSON(t, get(t, ts, "/api/submissions/"+withOut.ID), &detail)
+	if detail.ProjectKey != "proj/a" || detail.ProjectName != "甲" {
+		t.Fatalf("详情来源项目错: %+v", detail)
+	}
+
+	var list []detailOut
+	decodeJSON(t, get(t, ts, "/api/submissions?project=proj/a"), &list)
+	if len(list) != 1 || list[0].ID != withOut.ID {
+		t.Fatalf("project 过滤错: %+v", list)
+	}
+	decodeJSON(t, get(t, ts, "/api/submissions?project=proj/b"), &list)
+	if len(list) != 0 {
+		t.Fatalf("未知 project 应为空,得 %+v", list)
+	}
+	decodeJSON(t, get(t, ts, "/api/submissions"), &list)
+	if len(list) != 2 {
+		t.Fatalf("不传 project 应不过滤,得 %d 条", len(list))
 	}
 }
 

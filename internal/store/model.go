@@ -5,6 +5,8 @@ type Submission struct {
 	ID            string
 	Title         string
 	Note          string
+	ProjectKey    string
+	ProjectName   string
 	Status        string // pending | reviewed;reviewed 为终态
 	Decision      string // approve | reject | choose;""=未裁
 	ChosenVariant int    // decision=choose 时被选中的候选 seq;0=无
