@@ -140,11 +140,11 @@ func TestSubmitPathVariantsKindMapping(t *testing.T) {
 			t.Fatalf("variant%d b64 解码不符: err=%v", i, err)
 		}
 	}
-	// 票 09:每个候选都应有按 seq 编号的候选页 URL。
+	// 票 09:每个候选都应有按 seq 编号的候选链接。
 	for _, seq := range []int{1, 2, 3} {
 		want := fmt.Sprintf("http://phone.test:%d/s/zz99zz/v%d", port, seq)
 		if !strings.Contains(text, want) {
-			t.Fatalf("成功文本缺候选页 %q:\n%s", want, text)
+			t.Fatalf("成功文本缺候选链接 %q:\n%s", want, text)
 		}
 	}
 	if !strings.Contains(text, "候选数=3") {
@@ -226,6 +226,7 @@ func TestGetReviewAndListAgainstFakeServe(t *testing.T) {
 	defer backend.Close()
 
 	s, _, _ := newTestSrv(t, backend.URL)
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
 
 	text, isErr := s.callTool(context.Background(), "mockit_get_review", mustJSON(t, map[string]any{"id": "ab12cd"}))
 	if isErr {
@@ -236,8 +237,8 @@ func TestGetReviewAndListAgainstFakeServe(t *testing.T) {
 			t.Fatalf("get_review 文本缺 %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "http") {
-		t.Fatalf("get_review 文本含 URL,违反 F6:\n%s", text)
+	if want := fmt.Sprintf("审核链接: http://phone.test:%d/s/ab12cd", port); !strings.Contains(text, want) {
+		t.Fatalf("get_review 待审文本缺审核链接 %q:\n%s", want, text)
 	}
 
 	text, isErr = s.callTool(context.Background(), "mockit_list", mustJSON(t, map[string]any{"status": "pending", "limit": 5}))
@@ -254,6 +255,54 @@ func TestGetReviewAndListAgainstFakeServe(t *testing.T) {
 	}
 	if strings.Contains(text, "http") {
 		t.Fatalf("list 文本含 URL,违反 F6:\n%s", text)
+	}
+}
+
+func TestGetReviewURLPolicy(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/submissions/ab12cd" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"ab12cd","title":"登录页","status":"reviewed","decision":"approve","chosen_variant":1,"comment":"可以","variants":[{"seq":1,"label":"A","kind":"html"}]}`)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/api/submissions/ef34gh" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"ef34gh","title":"空基址","status":"pending","decision":"","chosen_variant":null,"comment":"","variants":[{"seq":1,"label":"A","kind":"html"}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer backend.Close()
+
+	s, _, _ := newTestSrv(t, backend.URL)
+	text, isErr := s.callTool(context.Background(), "mockit_get_review", mustJSON(t, map[string]any{"id": "ab12cd"}))
+	if isErr {
+		t.Fatalf("已审 get_review 不应失败: %s", text)
+	}
+	for _, want := range []string{"reviewed(已审)", "approve", "可以"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("已审 get_review 文本缺 %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "http") {
+		t.Fatalf("已审 get_review 不应附 URL:\n%s", text)
+	}
+
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
+	s.ensure = func() (*lifecycle.Lock, error) {
+		return &lifecycle.Lock{Port: port, PID: os.Getpid(), Version: Version, Token: "t", BaseHost: ""}, nil
+	}
+	text, isErr = s.callTool(context.Background(), "mockit_get_review", mustJSON(t, map[string]any{"id": "ef34gh"}))
+	if isErr {
+		t.Fatalf("空 BaseHost 的 pending get_review 不应失败: %s", text)
+	}
+	for _, want := range []string{"ef34gh", "空基址", "pending(待审)", "未裁决", "A(html)"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("空 BaseHost 的 pending get_review 文本缺 %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "http") {
+		t.Fatalf("空 BaseHost 时不应附 URL:\n%s", text)
 	}
 }
 

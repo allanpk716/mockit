@@ -225,7 +225,7 @@ if [ "$V" = "${TAG#v}" ]; then echo "版本对齐:$TAG"; else echo "版本不符
 **最终验收:重启 Claude Code 进程**——退出整个 Claude Code 进程再启动,**仅开新会话不够**(旧进程不会重读 PATH、`~/.claude.json` 与技能目录)。本次重启同时使三样东西生效:PATH、MCP 配置、技能。新会话中:
 
 1. 工具列表出现 `mockit_submit` / `mockit_get_review` / `mockit_list` / `mockit_upgrade` 四个工具，即接入成功。
-2. 可选冒烟:提交一条最小提交(如 title=「mockit 安装冒烟」,1 个候选,`html` 内联任意极小页面),拿到 id 与审核页 URL 即通过;不要求用户裁决,放着 14 天自动清理。首次调用会自动拉起 serve,多花几秒属正常。
+2. 可选冒烟:提交一条最小提交(如 title=「mockit 安装冒烟」,1 个候选,`html` 内联任意极小页面),拿到 id 与审核链接 即通过;不要求用户裁决,放着 14 天自动清理。首次调用会自动拉起 serve,多花几秒属正常。
 
 日常使用:接入方 agent 参考 release 附带的 AGENT-GUIDE.md(工作流、错误应对);技能会在用户要做 mock 页面时自动触发。
 
