@@ -27,7 +27,7 @@ func testStore(t *testing.T) *store.Store {
 
 func mustCreate(t *testing.T, s *store.Store, id string) {
 	t.Helper()
-	if err := s.CreateSubmission(id, "标题 "+id, ""); err != nil {
+	if err := s.CreateSubmission(id, "标题 "+id, "", "", ""); err != nil {
 		t.Fatalf("CreateSubmission(%s): %v", id, err)
 	}
 }
@@ -193,7 +193,7 @@ func TestRunOnceRecordExpiredAfterDecisionDays(t *testing.T) {
 func TestRunOnceReviewedExpiredNoteRetained(t *testing.T) {
 	s := testStore(t)
 	dataDir := t.TempDir()
-	if err := s.CreateSubmission("oldnote", "带备注的提交", "留档备注"); err != nil {
+	if err := s.CreateSubmission("oldnote", "带备注的提交", "留档备注", "", ""); err != nil {
 		t.Fatalf("CreateSubmission: %v", err)
 	}
 	mustAddVariant(t, s, "oldnote", 1)
@@ -311,6 +311,6 @@ func TestStartStop(t *testing.T) {
 	s := testStore(t)
 	base := time.Now()
 	stop := Start(s, t.TempDir(), 14, 90, discardLogger(), futureClock(base, 30), time.Hour)
-	stop()  // 阻塞至循环退出
+	stop() // 阻塞至循环退出
 	stop() // 二次调用必须安全不 panic
 }

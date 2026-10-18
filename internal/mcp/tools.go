@@ -118,12 +118,13 @@ func toolDefs() []toolDef {
 		},
 		{
 			Name:        "mockit_list",
-			Description: "列出提交(可按状态过滤、限条数);返回 id/标题/状态简列。",
+			Description: "列出提交(可按状态过滤、限条数);默认只列当前项目的提交;all=true 列出全部项目。返回 id/标题/状态简列。",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"status": map[string]any{"type": "string", "enum": []string{"pending", "reviewed"}, "description": "按状态过滤(可选)"},
 					"limit":  map[string]any{"type": "integer", "description": "返回条数上限(可选)"},
+					"all":    map[string]any{"type": "boolean", "description": "默认只列当前项目的提交;all=true 列出全部项目"},
 				},
 			},
 		},
@@ -295,9 +296,11 @@ type payloadVariant struct {
 }
 
 type submitPayload struct {
-	Title    string           `json:"title"`
-	Note     string           `json:"note"`
-	Variants []payloadVariant `json:"variants"`
+	Title       string           `json:"title"`
+	Note        string           `json:"note"`
+	ProjectKey  string           `json:"project_key"`
+	ProjectName string           `json:"project_name"`
+	Variants    []payloadVariant `json:"variants"`
 }
 
 // submitResponse 承接 server 的提交响应(subToJSON 形状):候选在
@@ -319,7 +322,13 @@ func (s *server) toolSubmit(ctx context.Context, raw json.RawMessage) (string, b
 	if len(a.Variants) == 0 || len(a.Variants) > 6 {
 		return "候选数须在 1~6 个", true
 	}
-	payload := submitPayload{Title: a.Title, Note: a.Note}
+	project := s.project()
+	payload := submitPayload{
+		Title:       a.Title,
+		Note:        a.Note,
+		ProjectKey:  project.Key,
+		ProjectName: project.Name,
+	}
 	for i, v := range a.Variants {
 		content, kind, err := variantContent(v)
 		if err != nil {
@@ -359,8 +368,8 @@ func (s *server) toolSubmit(ctx context.Context, raw json.RawMessage) (string, b
 	// 票 09/D16:submit 结果出 URL(产品输出,允许);页面路由 /s/{id} 与
 	// /s/{id}/v{seq}。端口已含在 pubBase(实例锁实际端口)。
 	var b strings.Builder
-	fmt.Fprintf(&b, "已提交:id=%s 状态=%s 候选数=%d\n审核链接: %s/s/%s",
-		r.ID, statusText(r.Status), len(r.Variants), pubBase, r.ID)
+	fmt.Fprintf(&b, "已提交:id=%s 状态=%s 候选数=%d\n来源项目: %s\n审核链接: %s/s/%s",
+		r.ID, statusText(r.Status), len(r.Variants), projectName(project.Name), pubBase, r.ID)
 	if len(r.Variants) > 0 {
 		b.WriteString("\n候选链接:")
 		for _, v := range r.Variants {
@@ -436,6 +445,8 @@ type variantBrief struct {
 type submissionJSON struct {
 	ID            string         `json:"id"`
 	Title         string         `json:"title"`
+	ProjectKey    string         `json:"project_key"`
+	ProjectName   string         `json:"project_name"`
 	Status        string         `json:"status"`
 	Decision      string         `json:"decision"`
 	ChosenVariant any            `json:"chosen_variant"`
@@ -446,6 +457,14 @@ type submissionJSON struct {
 type listArgs struct {
 	Status string `json:"status"`
 	Limit  int    `json:"limit"`
+	All    bool   `json:"all"`
+}
+
+func projectName(name string) string {
+	if name == "" {
+		return "未知项目"
+	}
+	return name
 }
 
 func (s *server) toolGetReview(ctx context.Context, raw json.RawMessage) (string, bool) {
@@ -486,7 +505,13 @@ func (s *server) toolGetReview(ctx context.Context, raw json.RawMessage) (string
 		return "详情响应解析失败: " + err.Error(), true
 	}
 	var b strings.Builder
+	project := s.project()
+	if d.ProjectKey != "" && project.Key != "" && d.ProjectKey != project.Key {
+		fmt.Fprintf(&b, "⚠ 此提交来自项目「%s」,不是当前项目「%s」,请确认 id 没取错\n",
+			projectName(d.ProjectName), projectName(project.Name))
+	}
 	fmt.Fprintf(&b, "提交 %s《%s》\n", d.ID, d.Title)
+	fmt.Fprintf(&b, "来源项目: %s\n", projectName(d.ProjectName))
 	fmt.Fprintf(&b, "状态: %s\n", statusText(d.Status))
 	switch {
 	case d.Decision == "":
@@ -526,8 +551,12 @@ func (s *server) toolList(ctx context.Context, raw json.RawMessage) (string, boo
 		return err.Error(), true
 	}
 	q := url.Values{}
+	project := s.project()
 	if st := strings.TrimSpace(a.Status); st != "" {
 		q.Set("status", st)
+	}
+	if !a.All && project.Key != "" {
+		q.Set("project", project.Key)
 	}
 	if a.Limit > 0 {
 		q.Set("limit", strconv.Itoa(a.Limit))
@@ -555,7 +584,11 @@ func (s *server) toolList(ctx context.Context, raw json.RawMessage) (string, boo
 	var b strings.Builder
 	fmt.Fprintf(&b, "共 %d 条:\n", len(items))
 	for _, it := range items {
-		fmt.Fprintf(&b, "- %s [%s] %s\n", it.ID, statusText(it.Status), it.Title)
+		if a.All {
+			fmt.Fprintf(&b, "- %s [%s] %s 〔项目: %s〕\n", it.ID, statusText(it.Status), it.Title, projectName(it.ProjectName))
+		} else {
+			fmt.Fprintf(&b, "- %s [%s] %s\n", it.ID, statusText(it.Status), it.Title)
+		}
 	}
 	return b.String(), false
 }

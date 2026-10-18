@@ -44,6 +44,7 @@ func TestSubmitInlineHTMLPostsB64(t *testing.T) {
 	defer backend.Close()
 
 	s, _, _ := newTestSrv(t, backend.URL)
+	s.detectProject = func() (string, string) { return "proj/current", "当前项目" }
 	port := backend.Listener.Addr().(*net.TCPAddr).Port
 	html := "<h1>你好</h1>"
 	text, isErr := s.callTool(context.Background(), "mockit_submit", mustJSON(t, map[string]any{
@@ -61,6 +62,9 @@ func TestSubmitInlineHTMLPostsB64(t *testing.T) {
 	}
 	if gotBody["title"] != "登录页" || gotBody["note"] != "备注文案" {
 		t.Fatalf("payload title/note 不符: %v", gotBody)
+	}
+	if gotBody["project_key"] != "proj/current" || gotBody["project_name"] != "当前项目" {
+		t.Fatalf("payload 来源项目不符: %v", gotBody)
 	}
 	variants, _ := gotBody["variants"].([]any)
 	v0, _ := variants[0].(map[string]any)
@@ -81,6 +85,9 @@ func TestSubmitInlineHTMLPostsB64(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("成功文本缺 %q:\n%s", want, text)
 		}
+	}
+	if !strings.Contains(text, "来源项目: 当前项目") {
+		t.Fatalf("成功文本缺来源项目:\n%s", text)
 	}
 	if strings.Contains(text, "127.0.0.1") {
 		t.Fatalf("成功文本不得泄漏内部环回地址:\n%s", text)
@@ -315,6 +322,7 @@ func TestListEmptyAndNoFilters(t *testing.T) {
 	defer backend.Close()
 
 	s, _, _ := newTestSrv(t, backend.URL)
+	s.detectProject = func() (string, string) { return "", "unknown" } // 空 key 模拟无法定位项目,应退回不过滤
 	text, isErr := s.callTool(context.Background(), "mockit_list", json.RawMessage("{}"))
 	if isErr {
 		t.Fatalf("list 不应失败: %s", text)
@@ -324,6 +332,80 @@ func TestListEmptyAndNoFilters(t *testing.T) {
 	}
 	if text != "暂无提交" {
 		t.Fatalf("空列表文本 = %q, want 暂无提交", text)
+	}
+}
+
+func TestListProjectScopeAndAll(t *testing.T) {
+	var gotQuery string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `[{"id":"a1","title":"甲","project_key":"proj/current","project_name":"当前","status":"pending"},{"id":"b2","title":"乙","project_key":"proj/other","project_name":"其他","status":"pending"}]`)
+	}))
+	defer backend.Close()
+
+	s, _, _ := newTestSrv(t, backend.URL)
+	s.detectProject = func() (string, string) { return "proj/current", "当前" }
+	text, isErr := s.callTool(context.Background(), "mockit_list", mustJSON(t, map[string]any{"status": "pending"}))
+	if isErr {
+		t.Fatalf("list 不应失败: %s", text)
+	}
+	if !strings.Contains(gotQuery, "project=proj") || !strings.Contains(gotQuery, "status=pending") {
+		t.Fatalf("默认 list query = %q", gotQuery)
+	}
+	if strings.Contains(text, "项目:") {
+		t.Fatalf("默认 list 不应追加项目显示:\n%s", text)
+	}
+
+	text, isErr = s.callTool(context.Background(), "mockit_list", mustJSON(t, map[string]any{"all": true}))
+	if isErr {
+		t.Fatalf("all list 不应失败: %s", text)
+	}
+	if gotQuery != "" {
+		t.Fatalf("all=true query = %q, want 空", gotQuery)
+	}
+	for _, want := range []string{"〔项目: 当前〕", "〔项目: 其他〕"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("all list 缺 %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestGetReviewProjectWarning(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/submissions/same12":
+			_, _ = io.WriteString(w, `{"id":"same12","project_key":"proj/current","project_name":"当前","status":"pending","variants":[]}`)
+		case "/api/submissions/other1":
+			_, _ = io.WriteString(w, `{"id":"other1","project_key":"proj/other","project_name":"其他","status":"pending","variants":[]}`)
+		case "/api/submissions/legacy":
+			_, _ = io.WriteString(w, `{"id":"legacy","status":"pending","variants":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backend.Close()
+
+	s, _, _ := newTestSrv(t, backend.URL)
+	s.detectProject = func() (string, string) { return "proj/current", "当前" }
+	for _, tc := range []struct {
+		id      string
+		warn    bool
+		project string
+	}{
+		{"same12", false, "当前"},
+		{"other1", true, "其他"},
+		{"legacy", false, "未知项目"},
+	} {
+		text, isErr := s.callTool(context.Background(), "mockit_get_review", mustJSON(t, map[string]any{"id": tc.id}))
+		if isErr {
+			t.Fatalf("%s get_review 不应失败: %s", tc.id, text)
+		}
+		if strings.HasPrefix(text, "⚠ 此提交来自项目") != tc.warn {
+			t.Fatalf("%s 警告状态不符:\n%s", tc.id, text)
+		}
+		if !strings.Contains(text, "来源项目: "+tc.project) {
+			t.Fatalf("%s 缺来源项目 %q:\n%s", tc.id, tc.project, text)
+		}
 	}
 }
 

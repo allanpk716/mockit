@@ -233,7 +233,7 @@ if [ "$V" = "${TAG#v}" ]; then echo "版本对齐:$TAG"; else echo "版本不符
 
 | 症状 | 原因与处置 |
 |---|---|
-| 手机打不开审核页 URL | NetBird 前提:URL 主机名来自本机 NetBird 网段(100.64.0.0/10)探测或 `external_url` 配置,**手机与机器同在 NetBird 网络才可达**。 |
+| 手机或电脑打不开审核链接 | NetBird 前提:链接主机名来自本机 NetBird 网段(100.64.0.0/10)探测或 `external_url` 配置,**设备与机器同在 NetBird 网络才可达**。 |
 | submit 报"无法确定手机可达地址…配 external_url" | 本机探测不到唯一的 NetBird IPv4。在 `~/.mockit/config.json` 写 `"external_url": "裸主机名"`(域名或 IP 字面量,含 IPv6;**不带端口、不带 `http://`**,带了 serve 启动即报配置错误),改回裸主机名后重试 submit;若仍报旧错,结束 serve 进程让下次调用自动重新拉起。 |
 | 旧链接 404 | serve 重启发生端口漂移(被占自动 +1),旧 URL 失效;提交数据仍在。重新提交取新 URL,或从根路径(列表页)进入。 |
 | MCP 报"启动中退出,可手工运行 mockit serve 查看报错" | 自动拉起的 serve 因配置等问题退出。手工开一个终端运行 `mockit serve` 看具体报错(常见:external_url 带了端口或前缀)。 |

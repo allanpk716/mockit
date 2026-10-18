@@ -24,7 +24,7 @@ import (
 )
 
 // Version 是二进制版本;MCP 握手据此判断是否停旧起新。
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 // skillMD 是仓内技能正本,构建时内嵌(票 #12):install-skill 与后续升级
 // 共用这一份,确保二进制内技能与 skills/mockit/SKILL.md 不会分叉。

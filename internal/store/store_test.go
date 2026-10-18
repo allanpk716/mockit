@@ -1,9 +1,13 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 const day = 86400 // 一天的秒数
@@ -20,14 +24,14 @@ func testStore(t *testing.T) *Store {
 
 func mustCreate(t *testing.T, s *Store, id string) {
 	t.Helper()
-	if err := s.CreateSubmission(id, "标题 "+id, ""); err != nil {
+	if err := s.CreateSubmission(id, "标题 "+id, "", "", ""); err != nil {
 		t.Fatalf("CreateSubmission(%s): %v", id, err)
 	}
 }
 
 func TestCreateAndGetNote(t *testing.T) {
 	s := testStore(t)
-	if err := s.CreateSubmission("abc123", "标题", "备注说明"); err != nil {
+	if err := s.CreateSubmission("abc123", "标题", "备注说明", "proj/a", "甲"); err != nil {
 		t.Fatalf("CreateSubmission: %v", err)
 	}
 	got, err := s.Get("abc123")
@@ -37,8 +41,11 @@ func TestCreateAndGetNote(t *testing.T) {
 	if got.Note != "备注说明" {
 		t.Errorf("note 应入库,得 %q", got.Note)
 	}
+	if got.ProjectKey != "proj/a" || got.ProjectName != "甲" {
+		t.Errorf("来源项目应入库,得 key=%q name=%q", got.ProjectKey, got.ProjectName)
+	}
 	// 空 note 也是合法入库形态,回空串
-	if err := s.CreateSubmission("def456", "标题2", ""); err != nil {
+	if err := s.CreateSubmission("def456", "标题2", "", "", ""); err != nil {
 		t.Fatalf("CreateSubmission(空 note): %v", err)
 	}
 	got2, err := s.Get("def456")
@@ -85,6 +92,49 @@ func TestOpenIdempotent(t *testing.T) {
 		t.Fatalf("二次 Open(建表应幂等): %v", err)
 	}
 	_ = s2.Close()
+}
+
+func TestOpenMigratesLegacySubmissionProjects(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "mockit.db"))
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	const legacySchema = `CREATE TABLE submissions (
+		id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'pending', decision TEXT, chosen_variant INTEGER,
+		comment TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, reviewed_at INTEGER,
+		pinned INTEGER NOT NULL DEFAULT 0, files_deleted INTEGER NOT NULL DEFAULT 0
+	);`
+	if _, err := db.Exec(legacySchema); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO submissions (id,title,created_at) VALUES ('legacy1','旧提交',1)`); err != nil {
+		t.Fatalf("seed legacy submission: %v", err)
+	}
+	_ = db.Close()
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open legacy db: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	got, err := s.Get("legacy1")
+	if err != nil {
+		t.Fatalf("Get legacy: %v", err)
+	}
+	if got.ProjectKey != "" || got.ProjectName != "" {
+		t.Fatalf("旧记录来源项目应为空,得 key=%q name=%q", got.ProjectKey, got.ProjectName)
+	}
+	// 再 Open 一次验证 ADD COLUMN 幂等。
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen migrated db: %v", err)
+	}
+	defer s2.Close()
 }
 
 func TestCreateAndGet(t *testing.T) {
@@ -275,21 +325,21 @@ func TestListOrderAndFilter(t *testing.T) {
 		return true
 	}
 
-	all, err := s.List("", 0)
+	all, err := s.List("", "", 0)
 	if err != nil {
 		t.Fatalf("List 全量: %v", err)
 	}
 	if got := wantIDs(all); !eq(got, []string{"p2", "p1", "r1", "r2"}) {
 		t.Errorf("全量顺序应为 待审在前新在前、已审在后新在前,得到 %v", got)
 	}
-	pending, err := s.List("pending", 0)
+	pending, err := s.List("pending", "", 0)
 	if err != nil {
 		t.Fatalf("List(pending): %v", err)
 	}
 	if got := wantIDs(pending); !eq(got, []string{"p2", "p1"}) {
 		t.Errorf("pending 过滤应得 [p2 p1],得到 %v", got)
 	}
-	reviewed, err := s.List("reviewed", 0)
+	reviewed, err := s.List("reviewed", "", 0)
 	if err != nil {
 		t.Fatalf("List(reviewed): %v", err)
 	}
@@ -310,7 +360,7 @@ func TestListLimitCountsSubmissions(t *testing.T) {
 	setCreatedAt(t, s, "p1", now-200)
 	setCreatedAt(t, s, "p2", now-100)
 
-	got, err := s.List("", 1)
+	got, err := s.List("", "", 1)
 	if err != nil {
 		t.Fatalf("List limit=1: %v", err)
 	}
@@ -322,6 +372,49 @@ func TestListLimitCountsSubmissions(t *testing.T) {
 	}
 	if len(got[0].Variants) != 2 {
 		t.Errorf("候选不应被 limit 挤掉,得到 %d 个", len(got[0].Variants))
+	}
+}
+
+func TestListProjectStatusAndLimitFilters(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().Unix()
+	seed := []struct {
+		id, project, status string
+		created             int64
+	}{
+		{"apnew1", "proj/a", "pending", now - 10},
+		{"apold1", "proj/a", "pending", now - 20},
+		{"arview", "proj/a", "reviewed", now - 30},
+		{"bpnew1", "proj/b", "pending", now - 5},
+	}
+	for _, sd := range seed {
+		if err := s.CreateSubmission(sd.id, sd.id, "", sd.project, sd.project); err != nil {
+			t.Fatalf("CreateSubmission(%s): %v", sd.id, err)
+		}
+		setCreatedAt(t, s, sd.id, sd.created)
+		if sd.status == StatusReviewed {
+			if err := s.SaveReview(sd.id, DecisionApprove, 0, ""); err != nil {
+				t.Fatalf("SaveReview(%s): %v", sd.id, err)
+			}
+		}
+	}
+	got, err := s.List(StatusPending, "proj/a", 1)
+	if err != nil {
+		t.Fatalf("List filters: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "apnew1" {
+		var ids []string
+		for _, sub := range got {
+			ids = append(ids, sub.ID)
+		}
+		t.Fatalf("project+status+limit 应得 [apnew1],得 %v", ids)
+	}
+	all, err := s.List("", "proj/a", 0)
+	if err != nil {
+		t.Fatalf("List project: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("project=a 应得 3 条,得 %d", len(all))
 	}
 }
 
@@ -490,7 +583,7 @@ func TestDeleteRecord(t *testing.T) {
 	if _, err := s.Get("abc123"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("删除后 Get 应报 ErrNotFound,得到 %v", err)
 	}
-	list, err := s.List("", 0)
+	list, err := s.List("", "", 0)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

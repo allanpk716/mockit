@@ -240,7 +240,7 @@ func TestCheckFailureKeepsGoodResult(t *testing.T) {
 		t.Fatalf("预置成功检查失败:%+v", res)
 	}
 
-	srv.Close()                     // 网络断
+	srv.Close()                       // 网络断
 	time.Sleep(80 * time.Millisecond) // 好结果过期
 	if res := c.Check(context.Background(), false); res.State != StateFailed {
 		t.Fatalf("过期后断网检查应失败,得 %+v", res)

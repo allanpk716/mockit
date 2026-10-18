@@ -31,9 +31,11 @@ func (e *apiError) Error() string { return e.msg }
 
 // submitReq 是 POST /api/submissions 的请求体。
 type submitReq struct {
-	Title    string             `json:"title"`
-	Note     string             `json:"note"` // 入库 submissions.note(随记录留档至决策保留期满)
-	Variants []submitVariantReq `json:"variants"`
+	Title       string             `json:"title"`
+	Note        string             `json:"note"` // 入库 submissions.note(随记录留档至决策保留期满)
+	ProjectKey  string             `json:"project_key"`
+	ProjectName string             `json:"project_name"`
+	Variants    []submitVariantReq `json:"variants"`
 }
 
 type submitVariantReq struct {
@@ -127,7 +129,7 @@ func (s *Server) createSubmission(req *submitReq) (*store.Submission, *apiError)
 
 	// 4) 入库(候选登记,note 一并入库——留档 90 天,不随 14 天文件清理丢失);
 	//    失败回滚目录与记录
-	if err := s.store.CreateSubmission(id, req.Title, req.Note); err != nil {
+	if err := s.store.CreateSubmission(id, req.Title, req.Note, req.ProjectKey, req.ProjectName); err != nil {
 		return fail(500, "入库失败: "+err.Error())
 	}
 	for i, p := range ps {

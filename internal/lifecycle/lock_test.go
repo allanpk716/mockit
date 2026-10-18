@@ -6,12 +6,12 @@ package lifecycle
 // 计,同进程内两个句柄互相冲突,无需再拉子进程)。
 
 import (
-	"path/filepath"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"

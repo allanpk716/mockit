@@ -34,7 +34,10 @@ func newTestSrv(t *testing.T, backendURL string) (*server, *bytes.Buffer, *bytes
 		ensure: func() (*lifecycle.Lock, error) {
 			return nil, errors.New("测试不应触达 ensure")
 		},
-		httpc:   &http.Client{Timeout: 5 * time.Second},
+		httpc: &http.Client{Timeout: 5 * time.Second},
+		detectProject: func() (string, string) {
+			return "c:/work/proj-a", "proj-a"
+		},
 		notices: newNoticeBoard(),
 	}
 	if backendURL != "" {
