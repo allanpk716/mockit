@@ -6,13 +6,30 @@ import (
 )
 
 func TestNormalizeProjectKey(t *testing.T) {
-	got := normalizeProjectKey(`C:\Work\Mockit\`)
-	want := "C:/Work/Mockit"
-	if runtime.GOOS == "windows" {
-		want = "c:/work/mockit"
+	var tests []struct {
+		name string
+		path string
+		want string
 	}
-	if got != want {
-		t.Fatalf("normalizeProjectKey = %q, want %q", got, want)
+	if runtime.GOOS == "windows" {
+		tests = []struct {
+			name string
+			path string
+			want string
+		}{
+			{name: "windows path", path: `C:\Work\Mockit\`, want: "c:/work/mockit"},
+			{name: "mixed separators", path: `C:/Work/./Mockit/`, want: "c:/work/mockit"},
+		}
+	} else {
+		tests = []struct{ name, path, want string }{
+			{name: "unix path", path: "/home/u/Work/./Mockit/", want: "/home/u/Work/Mockit"},
+		}
+	}
+
+	for _, tt := range tests {
+		if got := normalizeProjectKey(tt.path); got != tt.want {
+			t.Fatalf("%s: normalizeProjectKey(%q) = %q, want %q", tt.name, tt.path, got, tt.want)
+		}
 	}
 }
 
